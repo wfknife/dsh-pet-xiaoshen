@@ -1,0 +1,81 @@
+{
+  "name": "deskpet",
+  "version": "2.0.0-rc.4",
+  "private": true,
+  "description": "Desktop pet for DSH - chat with DeepSeek from your desktop",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis",
+    "dist:release": "electron-builder --win --config build/electron-builder-release.json"
+  },
+  "build": {
+    "appId": "com.deskpet.xiaoshen",
+    "productName": "桌宠小深",
+    "directories": {
+      "output": "dist"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://example.com/updates"
+    },
+    "files": [
+      "main.js",
+      "state-store.cjs",
+    "custom-model-store.cjs",
+      "pet-life-store.cjs",
+      "official-harness.js",
+      "preload.js",
+      "dsh-compat.js",
+      "model-registry.js",
+      "model-candidate.js",
+      "model-validator.js",
+      "model-validator-real.js",
+      "dsh-lifecycle.js",
+      "userdata-isolation.js",
+      "update-manager.js",
+      "build/version-compare.js",
+      "renderer/**/*",
+      "!renderer/prompt-manager*",
+      "package.json",
+      "prompt-store.cjs",
+    "prompt-sample-runner.cjs",
+      "prompt-defaults.json"
+],
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/ws/**"
+],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+],
+    "win": {
+      "target": [
+        "nsis"
+],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "桌宠小深",
+      "include": "build/installer.nsh",
+      "artifactName": "deskpet-setup-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "cos-nodejs-sdk-v5": "^3.0.0",
+    "electron-updater": "^6.8.9",
+    "koffi": "^3.1.5",
+    "semver": "6.3.1",
+    "ws": "^8.21.3"
+  }
+}
