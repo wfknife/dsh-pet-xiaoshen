@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>相册 · 桌宠小深</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(160deg, #fdf6ec, #e8eef7);
+    color: #334155;
+    min-height: 100vh;
+    padding: 16px 20px 24px;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: linear-gradient(160deg, #1e293b, #0f172a); color: #cbd5e1; }
+    .cat-btn { color: #cbd5e1; }
+    .photo-card { background: rgba(30, 41, 59, 0.85) !important; border-color: #334155 !important; }
+    .photo-card .name { color: #f1f5f9 !important; }
+    .photo-card .desc { color: #94a3b8 !important; }
+  }
+  .head { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .sub { font-size: 12px; opacity: 0.7; margin-bottom: 12px; }
+  .cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .cat-btn {
+    padding: 5px 12px; border: none; border-radius: 20px;
+    background: rgba(255,255,255,0.65); color: #334155;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .cat-btn.active { background: #2f7ff0; color: #fff; }
+  .count { font-size: 13px; font-weight: 700; color: #0e6ba8; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; }
+  .photo-card {
+    background: #fff; border: 1px solid rgba(148,163,184,0.3);
+    border-radius: 12px; overflow: hidden; cursor: pointer;
+    position: relative; transition: transform .15s ease;
+  }
+  .photo-card:hover { transform: translateY(-2px); }
+  .photo-card .photo-wrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #dde4ec; }
+  .photo-card .photo-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-user-drag: none; user-select: none; }
+  #pv-img { -webkit-user-drag: none; user-select: none; }
+  .photo-card .date {
+    position: absolute; right: 6px; bottom: 6px;
+    background: rgba(0,0,0,.45); color: #fff; font-size: 10px;
+    padding: 2px 6px; border-radius: 6px;
+  }
+  /* 未解锁：统一剪影（深灰渐变 + 相机/人物剪影轮廓 + 锁） */
+  .photo-card.locked .photo-wrap {
+    background: linear-gradient(160deg, #9aa7b5, #6b7a8a);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .photo-card.locked .sil {
+    width: 48px; height: 48px; color: rgba(255,255,255,.45);
+    font-size: 40px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .photo-card.locked .name { color: #8a97a6; }
+  .photo-card .name { font-weight: 600; font-size: 12px; padding: 6px 8px 2px; }
+  .photo-card .desc { font-size: 10.5px; opacity: 0.75; line-height: 1.35; padding: 0 8px 4px; }
+  .photo-card .hint { font-size: 10.5px; color: #e07a3c; padding: 0 8px 8px; line-height: 1.35; }
+  .photo-card .meta { font-size: 10.5px; color: #0e6ba8; padding: 0 8px 8px; }
+  /* 大图预览 */
+  #preview {
+    position: fixed; inset: 0; background: rgba(15,23,42,.75);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  #preview.hidden { display: none; }
+  #preview .box {
+    background: #fff; border-radius: 14px; padding: 14px; max-width: 82vw; max-height: 88vh;
+    display: flex; flex-direction: column; gap: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.4);
+  }
+  #preview img { max-width: 340px; max-height: 70vh; border-radius: 10px; object-fit: contain; }
+  #preview .pname { font-weight: 700; font-size: 15px; color: #0e6ba8; }
+  #preview .pdesc { font-size: 13px; color: #55677a; line-height: 1.5; }
+  #preview .pmeta { font-size: 12px; color: #8a97a6; }
+  #preview .close {
+    align-self: flex-end; border: none; background: #eef2f7;
+    padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div class="head">📷 小深的相册</div>
+  <div class="sub">每一张，都是我们一起走过的瞬间。达成条件会自动解锁～</div>
+  <div class="cats" id="cats"></div>
+  <div class="count" id="count">加载中…</div>
+  <div class="grid" id="grid"></div>
+  <div id="preview" class="hidden">
+    <div class="box">
+      <div class="pname" id="pv-name"></div>
+      <img id="pv-img" src="" alt="照片" draggable="false" />
+      <div class="pdesc" id="pv-desc"></div>
+      <div class="pmeta" id="pv-meta"></div>
+      <button class="close" id="pv-close">关闭</button>
+    </div>
+  </div>
+  <script src="album.js"></script>
+</body>
+</html>

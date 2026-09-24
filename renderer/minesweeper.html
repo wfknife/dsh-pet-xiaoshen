@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>扫雷 · 桌宠小深</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(180deg, #eaf2fa 0%, #d5e4f2 100%);
+    color: #22303e; user-select: none; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; padding: 14px;
+  }
+  h1 { font-size: 16px; margin-bottom: 8px; color: #0e6ba8; }
+  .topbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; width: 100%; max-width: 860px; }
+  .btn {
+    border: 1.5px solid #b9cfe2; background: #fff; color: #22303e; border-radius: 8px;
+    padding: 5px 10px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { background: #e3f3fe; }
+  .btn.active { background: #e3f3fe; border-color: #4cc3f7; color: #0e6ba8; }
+  .status { font-size: 13px; font-weight: 700; color: #33475c; margin-left: auto; display: flex; gap: 10px; }
+  .board-wrap { display: flex; justify-content: center; }
+  .board { display: grid; gap: 1px; background: #a8bccf; border: 2px solid #8fa6bb; border-radius: 6px; padding: 3px; }
+  .cell {
+    width: 26px; height: 26px; background: #c9d8e6; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 800; cursor: pointer; line-height: 1;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .cell:hover { filter: brightness(1.08); }
+  .cell.open { background: #f2f6fa; cursor: default; }
+  .cell.flag { background: #fdeeca; }
+  .cell.mine-hit { background: #f8b4b4; }
+  .c1 { color: #2563eb; } .c2 { color: #16a34a; } .c3 { color: #dc2626; }
+  .c4 { color: #7c3aed; } .c5 { color: #b45309; } .c6 { color: #0891b2; } .c7 { color: #334155; } .c8 { color: #64748b; }
+  .result { margin-top: 10px; font-size: 14px; font-weight: 700; min-height: 22px; }
+  .hint { margin-top: 6px; font-size: 11px; color: #6b7f92; }
+</style>
+</head>
+<body>
+  <h1>💣 扫雷</h1>
+  <div class="topbar">
+    <button class="btn active" data-level="easy">初级 9×9</button>
+    <button class="btn" data-level="mid">中级 16×16</button>
+    <button class="btn" data-level="hard">高级 16×30</button>
+    <button class="btn" id="btn-restart">🔄 新局</button>
+    <div class="status"><span id="mines-left">10</span>💣 <span id="timer">0</span>s</div>
+  </div>
+  <div class="board-wrap"><div id="board" class="board"></div></div>
+  <div id="result" class="result"></div>
+  <div class="hint">左键翻开 · 右键标记 ⚑ · 数字=周围雷数 · 翻开全部非雷格获胜</div>
+  <script src="minesweeper.js"></script>
+</body>
+</html>

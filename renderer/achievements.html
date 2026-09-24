@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>成就 · 桌宠小深</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(160deg, #fdf2f8, #e0f2fe);
+    color: #334155;
+    min-height: 100vh;
+    padding: 16px 20px 24px;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: linear-gradient(160deg, #1e293b, #0f172a); color: #cbd5e1; }
+    .card { background: rgba(30, 41, 59, 0.85) !important; border-color: #334155 !important; }
+    .desc { color: #94a3b8 !important; }
+    .head { color: #f1f5f9 !important; }
+  }
+  .head { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .sub { font-size: 12px; opacity: 0.7; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .card {
+    background: rgba(255,255,255,0.8);
+    border: 1px solid rgba(148,163,184,0.3);
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .card.locked { opacity: 0.45; filter: grayscale(0.6); }
+  .icon { font-size: 26px; }
+  .name { font-weight: 600; font-size: 13px; }
+  .desc { font-size: 11px; opacity: 0.75; line-height: 1.4; }
+  .meta { font-size: 11px; font-weight: 700; }
+  .count { margin-top: 14px; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="head">🏆 成就墙</div>
+  <div class="sub">达成条件后自动解锁，每解锁一个都会有小深的声音提醒～</div>
+  <div class="count" id="count">加载中…</div>
+  <div class="grid" id="grid"></div>
+  <script src="achievements.js"></script>
+</body>
+</html>
