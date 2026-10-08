@@ -1,0 +1,55 @@
+{
+  "appId": "com.deskpet.xiaoshen-clean",
+  "productName": "桌宠小深纯净版",
+  "directories": {
+    "output": "dist-clean"
+  },
+  "publish": {
+    "provider": "generic",
+    "url": "https://example.com/updates"
+  },
+  "files": [
+    "main.js",
+    "state-store.cjs",
+    "pet-life-store.cjs",
+    "preload.js",
+    "renderer/**/*",
+    "package.json",
+    "!build/**",
+    "!node_modules/electron-updater/**",
+    "!node_modules/elevate/**"
+  ],
+  "asarUnpack": [
+    "node_modules/koffi/**",
+    "node_modules/ws/**"
+  ],
+  "extraResources": [
+    {
+      "from": "build/icon.ico",
+      "to": "icon.ico"
+    },
+    {
+      "from": "build/clean-edition.json",
+      "to": "clean-edition.json"
+    },
+    {
+      "from": "build/daily-collector.json",
+      "to": "daily-collector.json"
+    }
+  ],
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "icon": "build/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "桌宠小深纯净版",
+    "include": "build/installer.nsh",
+    "artifactName": "deskpet-setup-clean-${version}.${ext}"
+  },
+  "artifactName": "deskpet-setup-clean-${version}.${ext}"
+}
