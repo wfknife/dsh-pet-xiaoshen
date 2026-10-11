@@ -1,0 +1,135 @@
+{
+  "repository": "https://github.com/PC2005-cloud/dsh-pet",
+  "commit": "ed0bec532f2e02ef9a31293871327c567ad3fdb0",
+  "sourceLicense": "Code MIT; media attribution and upstream noncommercial terms apply (README).",
+  "assets": [
+    {
+      "name": "work-wait",
+      "file": "dsh-pet/assets/webm/工作状态-原地踱步张望.webm",
+      "gitBlob": "7b9459a1efdf4155f5ddd3beb07936fcc5c8a7ed",
+      "bytes": 471725,
+      "sha256": "a56c17ef901fa531324a46a04def2381f65922d319ec83dadde34d2a4669e411",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "work-error",
+      "file": "dsh-pet/assets/webm/工作状态-垂头叹气冒汗.webm",
+      "gitBlob": "653ef82b71d52faa1d26a014afb7764f778926f7",
+      "bytes": 198937,
+      "sha256": "ab00c844e62221905574b4c070e0d7b6fa14fb2afa1064c27a160f10e25f7196",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "work-busy",
+      "file": "dsh-pet/assets/webm/工作状态-忙碌点按.webm",
+      "gitBlob": "32bc6dbf65a7f1afa403520c3dd37980ca353e5f",
+      "bytes": 475613,
+      "sha256": "b5d702e0c04adb7b255ac702001c24da36c8bf95efc891f693f4976986ab2435",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "work-thinking",
+      "file": "dsh-pet/assets/webm/工作状态-思考冒泡.webm",
+      "gitBlob": "51bc3bb2fb894e6f1499974d62a3d93592f91859",
+      "bytes": 408849,
+      "sha256": "b4a36cfa28ea5d7089e362a01972c6e880297c6dcd0d39f1994efd889a3c1be5",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "work-organize",
+      "file": "dsh-pet/assets/webm/工作状态-清点归档.webm",
+      "gitBlob": "af694fb0013cbc0aa5313ab0221f417b4efdb14a",
+      "bytes": 362510,
+      "sha256": "8c84f58f3a9e7b912e1cbfd89f77eb3652053fc9b2844295c8440cb636305d3b",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "work-success",
+      "file": "dsh-pet/assets/webm/工作状态-雀跃庆祝.webm",
+      "gitBlob": "edd6645a8ee9b222c720fb20cfff3b715e92db9b",
+      "bytes": 488024,
+      "sha256": "3ff681051a0bb4f152d7535d64b7f3194c30298bf56d41e521216a278f135d3e",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "routine-brush",
+      "file": "dsh-pet/assets/webm/晨间刷牙.webm",
+      "gitBlob": "66581dbd88c72bcba960d551b9cdcb0239da7d2f",
+      "bytes": 425460,
+      "sha256": "017e384e7e13732fb12428d024ef686e79df5b79bfab0d83faa7fa50653d1bc4",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "whisper-idle",
+      "file": "dsh-pet/assets/webm/碎碎念-发呆碎碎念.webm",
+      "gitBlob": "4afcaf7459e3b27b30252648b388e9cd3296807f",
+      "bytes": 326752,
+      "sha256": "02da8cc2194250ae9708b137a3deff43fed2ebd40a7aa4a033b6262c3485eb5b",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "whisper-screen",
+      "file": "dsh-pet/assets/webm/碎碎念-对屏碎碎念.webm",
+      "gitBlob": "8b7b357f01a9e5cf733dce28f32e8f94be4a030d",
+      "bytes": 364946,
+      "sha256": "fda85ca286e173b7cf868c91829c3445e55c395e0c788b6be310a855b9b37973",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "whisper-clean",
+      "file": "dsh-pet/assets/webm/碎碎念-擦桌碎碎念.webm",
+      "gitBlob": "343513cf0d5583b5f476080d5082f3f5e01588b8",
+      "bytes": 350436,
+      "sha256": "bfb616a3e6ed7375826d8fd00b41b9476d2e4bd65e10abddfb98f04c734e30e6",
+      "usage": "state-and-interaction"
+    },
+    {
+      "name": "balance-empty",
+      "file": "dsh-pet/assets/webm/余额-分文不剩.webm",
+      "gitBlob": "013b69906a5c56b219bbd74986f973eea53e3675",
+      "bytes": 490318,
+      "sha256": "b232349bdbd962bad7f3a15cfce539c6fadadfd0a286b7f03b03e59cf7aca7a8",
+      "usage": "reserved-until-verified-account-balance"
+    },
+    {
+      "name": "balance-worry",
+      "file": "dsh-pet/assets/webm/余额-数金皱眉.webm",
+      "gitBlob": "6c1dac8e3edddc02f4988e1c38e289177c335ecf",
+      "bytes": 319065,
+      "sha256": "94a7e0ee8e1012aadec33492301c893c2d1c5df7e36049dbada8c4a264bf1810",
+      "usage": "reserved-until-verified-account-balance"
+    },
+    {
+      "name": "balance-low",
+      "file": "dsh-pet/assets/webm/余额-袋空如洗.webm",
+      "gitBlob": "a85eb2206596c7031fbc64146df09f6e7b137aae",
+      "bytes": 383104,
+      "sha256": "3db780bbc96bb362ced36078fecacfb63b9d292c06b533cfb61797adb553a7f8",
+      "usage": "reserved-until-verified-account-balance"
+    },
+    {
+      "name": "balance-high",
+      "file": "dsh-pet/assets/webm/余额-金袋叮当.webm",
+      "gitBlob": "1bbe074a0bef1a7ef80508b3033269885edb6b2c",
+      "bytes": 530955,
+      "sha256": "6fda0c4ae013cf7906afa1cb846717d097db576343dab11006f14ca5c7a9a34f",
+      "usage": "reserved-until-verified-account-balance"
+    },
+    {
+      "name": "balance-normal",
+      "file": "dsh-pet/assets/webm/余额-钱袋如常.webm",
+      "gitBlob": "a52b686a7a3d801a98cccb81534eae2bfa7ac2b3",
+      "bytes": 387407,
+      "sha256": "f6cb9aa1c829fcbc62478dbddd0e0fcd7beb47433cea751d18b81ccccbec95d3",
+      "usage": "reserved-until-verified-account-balance"
+    },
+    {
+      "name": "balance-full",
+      "file": "dsh-pet/assets/webm/余额-钱袋满溢.webm",
+      "gitBlob": "34212594a3b9fc03daf2ae742763e62dfe4b034f",
+      "bytes": 622258,
+      "sha256": "dddd6ffc4e763b77360e49c0ccee0987a43c3d253a23e3133c334aabb598b362",
+      "usage": "reserved-until-verified-account-balance"
+    }
+  ]
+}

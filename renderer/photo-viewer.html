@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>照片 · 桌宠小深</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #101820;
+    color: #e6edf3;
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    padding: 16px;
+  }
+  .main {
+    flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+    overflow: hidden; border-radius: 10px; background: #0a0f14;
+  }
+  .main img {
+    max-width: 100%; max-height: calc(100vh - 130px);
+    object-fit: contain; border-radius: 6px;
+    display: none;
+    -webkit-user-drag: none; user-select: none;
+  }
+  .main img.show { display: block; }
+  .main .ph-wrap {
+    display: none; text-align: center; color: #8a97a6; font-size: 14px; line-height: 1.6;
+  }
+  .main .ph-wrap.show { display: block; }
+  .info { padding: 12px 4px 4px; }
+  .name { font-size: 15px; font-weight: 700; color: #7dd3fc; }
+  .date { font-size: 12px; color: #8a97a6; margin-top: 3px; }
+  .desc { font-size: 13px; color: #b8c4d0; margin-top: 6px; line-height: 1.5; }
+  .foot { padding: 10px 4px 2px; display: flex; gap: 8px; }
+  .btn {
+    border: none; border-radius: 8px; padding: 8px 18px;
+    background: #2f7ff0; color: #fff; font-size: 13px; cursor: pointer;
+  }
+  .btn.secondary { background: #33455c; }
+  .btn:hover { opacity: .9; }
+</style>
+</head>
+<body>
+  <div class="main" id="main">
+    <img id="img" src="" alt="照片" draggable="false" />
+    <div class="ph-wrap" id="ph-wrap">照片加载中…</div>
+  </div>
+  <div class="info">
+    <div class="name" id="name"></div>
+    <div class="date" id="date"></div>
+    <div class="desc" id="desc"></div>
+  </div>
+  <div class="foot">
+    <button class="btn" id="prev">‹ 上一张</button>
+    <button class="btn secondary" id="close">关闭</button>
+    <button class="btn" id="next">下一张 ›</button>
+  </div>
+  <script src="photo-viewer.js"></script>
+</body>
+</html>

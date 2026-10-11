@@ -1,0 +1,57 @@
+{
+  "appId": "com.deskpet.xiaoshen",
+  "productName": "桌宠小深",
+  "directories": {
+    "output": "dist/release"
+  },
+  "files": [
+    "main.js",
+    "state-store.cjs",
+    "custom-model-store.cjs",
+    "pet-life-store.cjs",
+    "official-harness.js",
+    "preload.js",
+    "dsh-compat.js",
+    "model-registry.js",
+    "model-candidate.js",
+    "model-validator.js",
+    "model-validator-real.js",
+    "dsh-lifecycle.js",
+    "userdata-isolation.js",
+    "update-manager.js",
+    "build/version-compare.js",
+    "renderer/**/*",
+    "!renderer/prompt-manager*",
+    "package.json",
+    "prompt-store.cjs",
+    "prompt-sample-runner.cjs",
+    "prompt-defaults.json"
+],
+  "asarUnpack": [
+    "node_modules/koffi/**",
+    "node_modules/ws/**"
+],
+  "extraResources": [
+    {
+      "from": "build/icon.ico",
+      "to": "icon.ico"
+    }
+],
+  "win": {
+    "target": [
+      "nsis"
+],
+    "icon": "build/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "桌宠小深",
+    "include": "build/installer.nsh",
+    "artifactName": "deskpet-setup-${version}.${ext}"
+  },
+  "npmRebuild": false,
+  "nodeGypRebuild": false,
+  "buildDependenciesFromSource": false
+}

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>生日贺卡 · 桌宠小深</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 14px 18px 20px;
+    background: linear-gradient(160deg, #fdf2f8, #e0f2fe);
+    color: #334155;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: linear-gradient(160deg, #1e293b, #0f172a); color: #cbd5e1; }
+  }
+  .head { width: 100%; max-width: 560px; text-align: center; }
+  .head .title { font-size: 19px; font-weight: 700; letter-spacing: 1px; }
+  .head .sub { font-size: 12px; opacity: 0.65; margin-top: 4px; }
+  /* 历史贺卡选择条 */
+  .archive {
+    width: 100%; max-width: 560px;
+    display: flex; flex-wrap: wrap; gap: 6px;
+    justify-content: center;
+    margin: 12px 0 14px;
+  }
+  .arch-btn {
+    border: 1px solid rgba(148,163,184,0.4);
+    background: rgba(255,255,255,0.75);
+    color: inherit;
+    border-radius: 20px;
+    padding: 5px 13px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .arch-btn:hover { border-color: #94a3b8; }
+  .arch-btn.active {
+    background: #6366f1; border-color: #6366f1; color: #fff;
+    font-weight: 600;
+  }
+  .arch-empty { font-size: 12.5px; opacity: 0.6; padding: 6px 0; }
+  .envelope-wrap { width: 100%; max-width: 560px; flex: 1; display: flex; align-items: center; justify-content: center; }
+  /* 信纸（风格主题由 JS 切换） */
+  .envelope {
+    width: 100%;
+    border-radius: 14px;
+    padding: 30px 34px 26px;
+    position: relative;
+  }
+  body.theme-paper .envelope { background: rgba(255,251,240,0.95); border: 1px solid #d8c49a; box-shadow: 0 8px 30px rgba(120,90,40,0.25); color: #5b4632; }
+  body.theme-starry .envelope { background: rgba(20,32,66,0.95); border: 1px solid #3d5588; box-shadow: 0 8px 30px rgba(0,0,0,0.5); color: #e8ecf8; }
+  body.theme-sakura .envelope { background: rgba(255,248,252,0.96); border: 1px solid #eeb9cf; box-shadow: 0 8px 30px rgba(180,90,130,0.25); color: #6b3a52; }
+  body.theme-bamboo .envelope { background: rgba(250,255,246,0.95); border: 1px solid #b7d3a8; box-shadow: 0 8px 30px rgba(60,110,60,0.22); color: #2f4a2f; }
+  .envelope .letter-head { text-align: center; margin-bottom: 14px; }
+  .envelope .greet { font-size: 24px; font-weight: 700; letter-spacing: 2px; }
+  .envelope .sub { font-size: 12.5px; opacity: 0.7; margin-top: 5px; }
+  .envelope hr { border: none; border-top: 1px dashed currentColor; opacity: 0.35; margin: 12px 0; }
+  .envelope .salute { font-size: 16.5px; font-weight: 700; margin-bottom: 10px; }
+  .envelope .body-text {
+    font-family: "KaiTi", "STKaiti", "楷体", "Kaiti SC", serif;
+    font-size: 16px;
+    line-height: 2.0;
+    text-align: justify;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .envelope .sign {
+    margin-top: 18px;
+    text-align: right;
+    font-size: 14.5px;
+    line-height: 1.9;
+  }
+  .envelope .seal {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 14px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-weight: 700;
+    transform: rotate(-6deg);
+  }
+  body.theme-paper .seal { background: #c0392b; color: #fdf6e3; }
+  body.theme-starry .seal { background: #f1c40f; color: #1b2a52; }
+  body.theme-sakura .seal { background: #e84393; color: #fff0f7; }
+  body.theme-bamboo .seal { background: #27ae60; color: #f0fff0; }
+  .footer { margin-top: 14px; text-align: center; font-size: 11.5px; opacity: 0.5; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div class="title">💌 生日贺卡</div>
+    <div class="sub" id="head-sub">小深 · 鲸鱼娘女仆</div>
+  </div>
+  <div class="archive" id="archive"></div>
+  <div class="envelope-wrap">
+    <div class="envelope" id="envelope">
+      <div class="letter-head">
+        <div class="greet" id="greet">🎂 生日贺卡</div>
+        <div class="sub" id="letter-sub"></div>
+      </div>
+      <hr />
+      <div class="salute" id="salute"></div>
+      <div class="body-text" id="body"></div>
+      <div class="sign" id="sign"></div>
+      <div class="footer">这是一封只会写给你的信 · 桌宠小深</div>
+    </div>
+  </div>
+  <script src="birthday-card-data.js"></script>
+  <script src="birthday-card.js"></script>
+</body>
+</html>

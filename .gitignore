@@ -1,0 +1,85 @@
+# dependencies / build outputs / runtime
+node_modules/
+dist/
+dist-clean/
+data/
+open-source/
+
+# logs / temp
+*.log
+*.tmp
+9223
+
+# local user state / secrets
+*.json.bak
+.credentials.yaml
+
+# build intermediates and large generated artifacts
+build/dsh-runtime.tgz
+build/dsh-runtime-expanded/
+build/dsh-runtime-expanded.bak-*/
+build/node-bundle/
+build/anim-*/
+build/asar-*/
+build/asar-check2/
+build/asar-clean*/
+build/asar-daily-recover/
+build/*.asar
+build/*.png
+build/*.jpg
+build/*.webp
+build/*.html
+
+# backups / one-off
+build/backup-*.js
+build/backup-*.json
+build/*.bak
+build/*.bak.*
+build/restore-*.cjs
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# local research / screenshots / misc
+research/
+shots/
+tools/
+node-bundle/
+build/seek-frames/
+
+# local archives / personal data — never publish
+recovery/
+_gh_token.tmp
+_build-*.log
+_build-*.err
+
+# internal docs / dev-only scripts (2026-10-11)
+docs/
+build/*.md
+BUILD-NOTES-TO-NEW-SESSION.md
+交接文档.md
+使用说明.md
+视听说-未来规划.md
+RELEASE.md
+
+
+# release artifacts & dev leftovers (2026-10-11)
+releases/
+build/*
+!build/build-clean.mjs
+!build/build-release-both.ps1
+!build/clean-edition.json
+!build/daily-collector.json
+!build/electron-builder-clean.json
+!build/electron-builder-release.json
+!build/icon.ico
+!build/make-version-json.mjs
+!build/prepare-release-dir.cjs
+!build/publish-github-release.ps1
+!build/upload-cos.mjs
+!build/verify-dual-release.cjs
+!build/version-compare.js

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>台词池设置</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(180deg, #f6f9fc 0%, #e8eff6 100%);
+    color: #22303e; min-height: 100vh; padding: 16px;
+  }
+  h1 { font-size: 17px; margin-bottom: 4px; color: #0e6ba8; }
+  .hint { font-size: 11px; color: #7a8a9c; margin-bottom: 14px; }
+  .group {
+    background: #fff; border: 1px solid #e2eaf3; border-radius: 12px;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .group-head {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+    background: #f0f6fb; cursor: pointer; user-select: none;
+  }
+  .group-head .g-name { flex: 1; font-size: 13.5px; font-weight: 700; }
+  .group-head .g-count { font-size: 11px; color: #7a8a9c; }
+  .group-body { padding: 8px 12px 12px; border-top: 1px solid #eef3f8; }
+  .line {
+    display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #3a5168;
+    background: #f6f9fc; border: 1px solid #e6eef5; border-radius: 7px;
+    padding: 4px 8px; margin-bottom: 4px;
+  }
+  .line .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .line .custom-tag { font-size: 10px; color: #a855f7; flex: none; }
+  .btn {
+    border: 1.5px solid #b9cfe2; background: #fff; color: #22303e; border-radius: 7px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: inherit; flex: none;
+  }
+  .btn:hover { background: #e3f3fe; }
+  .btn.danger:hover { background: #fee2e2; border-color: #f87171; color: #b91c1c; }
+  .btn.toggled { background: #e3f3fe; border-color: #4cc3f7; color: #0e6ba8; }
+  .add-row { display: flex; gap: 6px; margin-top: 6px; }
+  .add-row input {
+    flex: 1; min-width: 0; border: 1.5px solid #dbe4ee; border-radius: 7px;
+    padding: 5px 8px; font-size: 12.5px; outline: none; font-family: inherit; background: #fbfdff;
+  }
+  .add-row input:focus { border-color: #4cc3f7; }
+  .muted { font-size: 11px; color: #9aa8b8; }
+  /* 可编辑行：输入框样式 */
+  .line-input {
+    flex: 1; min-width: 0; border: 1px solid transparent; border-radius: 5px;
+    padding: 2px 4px; font-size: 12.5px; background: transparent; font-family: inherit; color: #3a5168;
+    outline: none;
+  }
+  .line-input:hover { border-color: #c8d8e6; background: #fff; }
+  .line-input:focus { border-color: #4cc3f7; background: #fff; }
+  /* 顶部操作栏 */
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .toolbar .btn.primary { background: #2f7ff0; color: #fff; border-color: #2f7ff0; }
+  .toolbar .btn.primary:hover { background: #1e6fd8; }
+  .save-hint { font-size: 11px; color: #7a8a9c; margin-left: auto; }
+</style>
+</head>
+<body>
+  <h1>🎤 台词池设置</h1>
+  <div class="hint">全部台词都可以编辑/添加/删除（含官方预设）。编辑输入框内容直接改，点删删掉，添加按钮加新句。"恢复官方默认"一键回到预设。改完点保存生效。</div>
+  <div class="toolbar">
+    <button class="btn primary" id="btn-save">💾 保存</button>
+    <button class="btn" id="btn-reset">🗑 清空所有自定义</button>
+    <button class="btn" id="btn-reload" title="放弃当前草稿，重新读取已经保存的台词">载入已保存版本</button>
+    <span class="save-hint" id="save-hint"></span>
+  </div>
+  <div id="groups"></div>
+  <script src="life/living-presence.js"></script>
+  <script src="lines.js"></script>
+</body>
+</html>

@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>deskpet</title>
+  <link rel="stylesheet" href="pet.css" />
+  <link rel="stylesheet" href="pet-sprite.css" />
+</head>
+<body>
+  <div id="stage" class="dp-stage">
+    <div id="pet-area">
+      <div id="bubble" class="dp-bubble hidden"></div>
+      <div id="hearts"></div>
+
+      <div id="pet" class="dp-pet" title="小深">
+        <div class="dp-sprite">
+          <video class="dp-anim" id="anim-idle-breathe" src="anim/idle-breathe.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-lookaround" src="anim/idle-lookaround.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-hum" src="anim/idle-hum.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-float" src="anim/idle-float.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-mirror" src="anim/idle-mirror.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-fan" src="anim/idle-fan.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-stretch" src="anim/idle-stretch.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-idle-bubbles" src="anim/idle-bubbles.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-wait" src="anim/work-wait.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-error" src="anim/work-error.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-busy" src="anim/work-busy.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-thinking" src="anim/work-thinking.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-organize" src="anim/work-organize.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-success" src="anim/work-success.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-routine-brush" src="anim/routine-brush.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-whisper-idle" src="anim/whisper-idle.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-whisper-screen" src="anim/whisper-screen.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-whisper-clean" src="anim/whisper-clean.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-empty" src="anim/balance-empty.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-worry" src="anim/balance-worry.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-low" src="anim/balance-low.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-high" src="anim/balance-high.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-normal" src="anim/balance-normal.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-balance-full" src="anim/balance-full.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-code" src="anim/work-code.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-work-think" src="anim/work-think.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-eat-rice" src="anim/eat-rice.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-eat-token" src="anim/eat-token.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-eat-snack" src="anim/eat-snack.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-sleep-nap" src="anim/sleep-nap.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-tired-yawn" src="anim/tired-yawn.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-sad-startle" src="anim/sad-startle.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-happy-jump" src="anim/happy-jump.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-happy-sway" src="anim/happy-sway.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-drag-carry" src="anim/drag-carry.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-violin" src="anim/egg-violin.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-watergun" src="anim/egg-watergun.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-kite" src="anim/egg-kite.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-snowman" src="anim/egg-snowman.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-balloon" src="anim/egg-balloon.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-animals" src="anim/egg-animals.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-whale" src="anim/egg-whale.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-leaves" src="anim/egg-leaves.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-icecream" src="anim/egg-icecream.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-maiddance" src="anim/egg-maiddance.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-zhaiwu" src="anim/egg-zhaiwu.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-rubik" src="anim/egg-rubik.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-bubbles" src="anim/egg-bubbles.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-jump" src="anim/egg-jump.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-desk" src="anim/egg-desk.webm" loop muted playsinline preload="none"></video>
+          <video class="dp-anim" id="anim-egg-wake" src="anim/egg-wake.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-click-tsundere" src="anim/click-tsundere.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-click-shy" src="anim/click-shy.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-click-tickle" src="anim/click-tickle.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-click-wave" src="anim/click-wave.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-crab" src="anim/eat-crab.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-dumpling" src="anim/eat-dumpling.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-laba" src="anim/eat-laba.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-ricecake" src="anim/eat-ricecake.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-qingtuan" src="anim/eat-qingtuan.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-tangyuan" src="anim/eat-tangyuan.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-tanghulu" src="anim/eat-tanghulu.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-dinner" src="anim/eat-dinner.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-lunch" src="anim/eat-lunch.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-watermelon" src="anim/eat-watermelon.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-breakfast" src="anim/eat-breakfast.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-longevity" src="anim/eat-longevity.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-chongyang" src="anim/eat-chongyang.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-zongzi" src="anim/eat-zongzi.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-hotpot" src="anim/eat-hotpot.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-dove" src="anim/egg-dove.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-chrysanthemum" src="anim/egg-chrysanthemum.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-gift" src="anim/egg-gift.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-spinningtop" src="anim/egg-spinningtop.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-needlework" src="anim/egg-needlework.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-flute" src="anim/egg-flute.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-wake-startle" src="anim/wake-startle.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-swing" src="anim/egg-swing.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-riverlantern" src="anim/egg-riverlantern.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-skyllantern" src="anim/egg-skyllantern.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-firework" src="anim/egg-firework.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-bloom" src="anim/egg-bloom.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-catpet" src="anim/egg-catpet.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-ghost" src="anim/egg-ghost.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-curtsy" src="anim/perform-curtsy.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-move-crab" src="anim/move-crab.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-flower" src="anim/egg-flower.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-magic" src="anim/egg-magic.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-rockhorse" src="anim/egg-rockhorse.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-note" src="anim/perform-note.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-juggling" src="anim/egg-juggling.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-word-whattoeat" src="anim/word-whattoeat.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-redpacket" src="anim/egg-redpacket.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-pumpkin" src="anim/egg-pumpkin.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-shuttlecock" src="anim/egg-shuttlecock.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-eat-caught" src="anim/eat-caught.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-gameangry" src="anim/egg-gameangry.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-liondance" src="anim/egg-liondance.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-gomoku" src="anim/egg-gomoku.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-spin" src="anim/perform-spin.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-fuchinese" src="anim/egg-fuchinese.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-tailthump" src="anim/perform-tailthump.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-toycar" src="anim/egg-toycar.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-squash" src="anim/perform-squash.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-move-runleft" src="anim/move-runleft.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-perform-dressup" src="anim/perform-dressup.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-mooncake" src="anim/egg-mooncake.webm" loop muted playsinline preload="none"></video>
+    <video class="dp-anim" id="anim-egg-christmas" src="anim/egg-christmas.webm" loop muted playsinline preload="none"></video>
+        </div>
+      </div>
+
+      <div id="actions" class="dp-actions">
+        <button id="btn-chat" class="dp-act" title="和小深聊天（消息发给 DeepSeek）">💬</button>
+        <button id="btn-client" class="dp-act" title="打开 DeepSeek Harness 桌面端" aria-label="打开 DeepSeek Harness 桌面端">🐳</button>
+        <button id="btn-hide" class="dp-act" title="收起小深">🙈</button>
+        <button id="btn-quit" class="dp-act" title="退出桌宠">⏻</button>
+      </div>
+
+        <div id="mini-chat" class="dp-mini-chat">
+          <input id="mini-chat-input" maxlength="200" placeholder="和小深聊两句…" />
+          <button id="mini-chat-send" title="发送">➤</button>
+        </div>
+
+
+      <div id="panel" class="dp-panel hidden">
+        <div class="dp-panel-head">
+          <span class="dp-panel-title" id="panel-title">🐳 小深</span>
+          <div class="dp-panel-head-right">
+            <span id="coin-badge" class="dp-coin-badge" title="金币">🪙 0</span>
+            <button id="btn-close" class="dp-panel-close" title="关闭">✕</button>
+          </div>
+        </div>
+
+        <div id="panel-toast" class="dp-panel-toast hidden"></div>
+
+        <div class="dp-tabs">
+          <button class="dp-tab dp-tab-active" data-tab="chat" title="聊天">💬</button>
+          <button class="dp-tab" data-tab="charc" title="与小深说话">💗</button>
+          <button class="dp-tab" data-tab="care" title="养成">📊</button>
+          <button class="dp-tab" data-tab="focus" title="专注">🍅</button>
+          <button class="dp-tab" data-tab="remind" title="提醒">📅</button>
+          <button class="dp-tab" data-tab="shop" title="商店">🏪</button>
+          <button class="dp-tab" data-tab="game" title="互动">🎯</button>
+          <button class="dp-tab" data-tab="settings" title="设置">⚙️</button>
+        </div>
+
+        <div id="tab-chat" class="dp-tab-pane">
+          <div class="dp-panel-status">
+            <span id="dot" class="dp-dot"></span>
+            <span id="status-text">空闲中，摸摸小深放松一下～</span>
+          </div>
+          <div class="dp-select-row">
+            <select id="session-select" class="dp-select" title="选择会话"></select>
+            <button id="btn-new-session" class="dp-mini-btn" title="新建一个会话">➕</button>
+            <button id="btn-del-session" class="dp-mini-btn" title="归档当前会话（从列表隐藏）">🗑</button>
+          </div>
+          <div class="dp-view-switch">
+            <button id="view-chat" class="dp-tab dp-tab-active">💬 聊天</button>
+            <button id="view-hist" class="dp-tab">📜 历史</button>
+            <button id="view-diary" class="dp-tab">📔 日记</button>
+          </div>
+          <div id="chat-body">
+            <div class="dp-set-row">
+              <span class="dp-set-label">🤖 模型</span>
+              <select id="model-select" class="dp-select"></select>
+            </div>
+            <div class="dp-set-row">
+              <span class="dp-set-label">🧠 推理</span>
+              <select id="effort-select" class="dp-select" title="模型推理等级"></select>
+            </div>
+            <div class="dp-set-row">
+              <span class="dp-set-label">🧩 预设</span>
+              <select id="preset-select" class="dp-select" title="仅在空白会话可切换"></select>
+            </div>
+            <div class="dp-set-row">
+              <span class="dp-set-label">🔐 权限</span>
+              <select id="perm-select" class="dp-select"></select>
+            </div>
+            <textarea id="chat-input" class="dp-input" placeholder="跟我说点什么…（Enter 发送）"></textarea>
+            <div id="attach-row" class="dp-attach-row"></div>
+            <div class="dp-send-row">
+              <button id="btn-attach" class="dp-mini-btn" title="添加图片（以文件路径发送，模型可读取）">📎 图片</button>
+              <button id="btn-send" class="dp-send">发送给 DeepSeek ➤</button>
+            </div>
+            <div class="dp-send-hint">Shift+Enter 换行 · Esc 关闭</div>
+          </div>
+          <div id="hist-body" class="hidden">
+            <div class="dp-hist-bar">
+              <button id="btn-hist-refresh" class="dp-mini-btn">🔄 刷新</button>
+              <button id="btn-hist-more" class="dp-mini-btn" title="加载更早的消息">⬇️ 更早</button>
+              <span id="hist-info" class="dp-muted"></span>
+            </div>
+            <div id="hist-list" class="dp-hist-list"></div>
+          </div>
+          <div id="diary-body" class="hidden">
+            <div class="dp-hist-bar">
+              <button id="btn-diary-now" class="dp-mini-btn" title="现在写一篇今天的日记">✍️ 写日记</button>
+              <button id="btn-diary-pin" class="dp-mini-btn" title="标记今天值得记住的事">📌 记住</button>
+              <button id="btn-diary-forget" class="dp-mini-btn" title="删除今天所有日记数据">🌫 忘掉今天</button>
+              <span id="diary-info" class="dp-muted"></span>
+            </div>
+            <div id="diary-pin-row" class="dp-diary-pin-row hidden">
+              <input id="diary-pin-input" class="dp-name-input" placeholder="今天有什么值得记住的？" maxlength="60" />
+              <button id="diary-pin-ok" class="dp-mini-btn">记住</button>
+            </div>
+            <img id="diary-cover" class="dp-diary-cover" src="photos/diary-cover.jpg" alt="日记时光" draggable="false" />
+            <div id="diary-memory" class="dp-diary-memory hidden">
+              <span id="diary-memory-text"></span>
+              <button id="diary-memory-del" class="dp-diary-memory-del" title="忘记这条记忆">✕</button>
+            </div>
+            <!-- 今日时间线展示已移除（2026-09-16，用户决定：chip 会累积且不需要显示）；活动采集仍保留 -->
+            <div id="diary-list" class="dp-hist-list"></div>
+          </div>
+        </div>
+
+        <div id="tab-charc" class="dp-tab-pane hidden">
+          <button id="charc-more" class="dp-mini-btn" hidden>查看更早的聊天</button>
+          <div id="charc-body" role="log" aria-label="和小深的聊天记录"></div>
+          <div id="charc-status" class="dp-panel-hint" role="status" aria-live="polite"></div>
+          <textarea id="charc-input" class="dp-input" placeholder="跟她说点什么…（Enter 发送）"></textarea>
+          <div class="dp-send-row">
+            <button id="charc-send" class="dp-send">发送 ➤</button>
+          </div>
+          <div class="dp-send-hint">Shift+Enter 换行 · Esc 关闭</div>
+        </div>
+
+        <div id="tab-care" class="dp-tab-pane hidden">
+          <div class="dp-stat-row">
+            <span class="dp-stat-label">🍙 饱食度</span>
+            <div class="dp-bar"><div id="bar-satiety" class="dp-bar-fill dp-fill-satiety"></div></div>
+            <span id="val-satiety" class="dp-stat-val">85</span>
+          </div>
+          <div class="dp-stat-row">
+            <span class="dp-stat-label">😊 心情</span>
+            <div class="dp-bar"><div id="bar-mood" class="dp-bar-fill dp-fill-mood"></div></div>
+            <span id="val-mood" class="dp-stat-val">85</span>
+          </div>
+          <div class="dp-stat-row">
+            <span class="dp-stat-label">⚡ 精力</span>
+            <div class="dp-bar"><div id="bar-energy" class="dp-bar-fill dp-fill-energy"></div></div>
+            <span id="val-energy" class="dp-stat-val">85</span>
+          </div>
+          <div class="dp-stat-row">
+            <span class="dp-stat-label">💧 口渴度</span>
+            <div class="dp-bar"><div id="bar-thirst" class="dp-bar-fill dp-fill-thirst"></div></div>
+            <span id="val-thirst" class="dp-stat-val">85</span>
+          </div>
+          <div class="dp-care-sub">🏆 成长</div>
+          <div class="dp-stat-row">
+            <span id="level-badge" class="dp-stat-label" style="width:auto;flex:none;margin-right:8px">Lv.1 · 实习女仆</span>
+            <div class="dp-bar"><div id="bar-exp" class="dp-bar-fill dp-fill-exp"></div></div>
+            <span id="val-exp" class="dp-stat-val" style="width:auto">0/50</span>
+          </div>
+          <div class="dp-care-sub">💗 好感度</div>
+          <div class="dp-stat-row">
+            <span id="aff-badge" class="dp-stat-label" style="width:auto;flex:none;margin-right:8px">初识</span>
+            <div class="dp-bar"><div id="bar-aff" class="dp-bar-fill dp-fill-aff"></div></div>
+            <span id="val-aff" class="dp-stat-val" style="width:auto">0/100</span>
+          </div>
+          <div id="companion-days" class="dp-care-meta"></div>
+          <div class="dp-care-sub">🎒 背包（点击道具使用）</div>
+          <div id="inventory" class="dp-inventory"></div>
+          <div class="dp-care-sub">📈 战绩</div>
+          <div id="care-meta" class="dp-care-meta"></div>
+        </div>
+
+        <div id="tab-focus" class="dp-tab-pane hidden">
+          <div class="dp-focus-mode">
+            <button id="focus-study" class="dp-mini-btn dp-level dp-level-active">📖 学习 25 分</button>
+            <button id="focus-break" class="dp-mini-btn dp-level">☕ 休息 5 分</button>
+          </div>
+          <div class="dp-focus-clock" id="focus-clock">25:00</div>
+          <div class="dp-game-row">
+            <button id="btn-focus" class="dp-send">开始专注 ⏱</button>
+          </div>
+          <div id="focus-meta" class="dp-care-meta">已完成 🍅 × 0</div>
+          <div class="dp-care-sub">📝 待办清单</div>
+          <div class="dp-name-row">
+            <input id="todo-input" class="dp-name-input" maxlength="60" placeholder="添加一个待办…" />
+            <button id="todo-add" class="dp-mini-btn">添加</button>
+          </div>
+          <div id="todo-list" class="dp-inventory"></div>
+          <div class="dp-care-sub">📌 备忘录</div>
+          <div class="dp-name-row">
+            <input id="memo-input" class="dp-name-input" maxlength="500" placeholder="记点什么…" />
+            <button id="memo-add" class="dp-mini-btn">保存</button>
+          </div>
+          <div id="memo-list" class="dp-inventory"></div>
+        </div>
+
+        <div id="tab-remind" class="dp-tab-pane hidden">
+          <div class="dp-care-sub" id="hydrate-title">💧 久坐提醒（每 45 分钟）</div>
+          <div class="dp-name-row">
+            <button id="btn-hydrate" class="dp-mini-btn">💧 喝水提醒：开</button>
+          </div>
+          <div class="dp-care-sub">📚 课程表</div>
+          <div class="dp-name-row">
+            <input id="class-name" class="dp-name-input" maxlength="20" placeholder="课程名" />
+            <select id="class-day" class="dp-select dp-sched-select">
+              <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+              <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option>
+            </select>
+            <select id="class-weeks" class="dp-select dp-sched-select">
+              <option value="all">每周</option><option value="odd">单周</option><option value="even">双周</option>
+            </select>
+          </div>
+          <div class="dp-name-row" style="margin-top:6px">
+            <input id="class-time" class="dp-name-input" type="time" value="08:00" />
+            <select id="class-remind" class="dp-select dp-sched-select">
+              <option value="0">到点提醒</option><option value="5">提前 5 分</option>
+              <option value="10" selected>提前 10 分</option><option value="30">提前 30 分</option>
+            </select>
+            <button id="class-add" class="dp-mini-btn">添加</button>
+          </div>
+          <div id="class-list" class="dp-inventory"></div>
+          <div class="dp-care-sub">🏫 教学周设置（单双周按此计算）</div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">学期起始：</span>
+            <input id="semester-start" class="dp-name-input" type="date" />
+          </div>
+        </div>
+
+        <div id="tab-settings" class="dp-tab-pane hidden">
+          <div class="dp-care-sub">✏️ 名称</div>
+          <div class="dp-name-row">
+            <input id="name-input" class="dp-name-input" maxlength="12" placeholder="给它起个名字" />
+            <button id="name-save" class="dp-mini-btn">保存</button>
+          </div>
+          <div class="dp-care-sub">👤 主人</div>
+          <div class="dp-name-row">
+            <input id="owner-name-input" class="dp-name-input" maxlength="12" placeholder="怎么称呼你？" />
+            <button id="owner-name-save" class="dp-mini-btn">保存</button>
+          </div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">生日</span>
+            <input id="owner-birthday-input" class="dp-name-input" type="date" style="flex:1" />
+            <button id="owner-birthday-save" class="dp-mini-btn">保存</button>
+          </div>
+          <div class="dp-name-row">
+            <button id="btn-birthday-cards" class="dp-mini-btn">💌 查看生日贺卡</button>
+            <span class="dp-panel-hint" id="birthday-cards-hint"></span>
+          </div>
+          <div class="dp-name-row">
+            <button id="btn-open-album" class="dp-mini-btn" title="查看解锁过的照片（也可以右键托盘图标打开）">📷 相册</button>
+          </div>
+          <div class="dp-care-sub">📔 每日日记</div>
+          <div class="dp-name-row">
+            <label class="dp-switch-row" style="flex:1;align-items:center" title="自动记录互动并写日记">
+              <input id="diary-enabled" type="checkbox" />
+              <span>📔 写日记</span>
+            </label>
+          </div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="width:auto;flex:none">写日记时间</span>
+            <input id="diary-time" class="dp-name-input" type="time" value="21:30" style="flex:1" />
+          </div>
+          <div class="dp-care-sub">👀 感知</div>
+          <div class="dp-name-row">
+            <label class="dp-switch-row" style="flex:1;align-items:center" title="只读应用类别和系统媒体信息">
+              <input id="perception-enabled" type="checkbox" />
+              <span>👀 环境感知</span>
+            </label>
+          </div>
+          <div class="dp-care-sub">🧠 模型与 API</div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">API 地址</span>
+            <input id="api-base-url" class="dp-name-input" style="flex:1" placeholder="留空 = https://api.deepseek.com" />
+          </div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">API Key</span>
+            <input id="api-key" type="password" class="dp-name-input" style="flex:1" autocomplete="off" placeholder="留空 = 用本机已保存的凭据" />
+            <datalist id="model-id-list"></datalist>
+          </div>
+          <div class="dp-name-row">
+            <button id="api-save" class="dp-mini-btn">保存</button>
+            <button id="api-clear-key" class="dp-mini-btn">清除 Key</button>
+          </div>
+          <div class="dp-panel-hint" id="api-hint" role="status">正在读取…</div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">聊天模型</span>
+            <input id="chat-model-select" class="dp-name-input" style="flex:1" list="model-id-list" placeholder="留空 = 用默认模型" />
+          </div>
+          <div id="chat-model-hint" class="dp-panel-hint"></div>
+          <div class="dp-name-row">
+            <span class="dp-set-label" style="flex:none;width:auto">场景覆盖</span>
+          </div>
+          <div id="scene-model-list" class="dp-scene-models">
+            <div class="dp-panel-hint">正在读取…</div>
+          </div>
+          <div class="dp-care-sub">💬 主动联系</div>
+          <div class="dp-name-row">
+            <label class="dp-switch-row" style="flex:1;align-items:center" title="允许小深主动发起聊天">
+              <input id="proactive-enabled" type="checkbox" />
+              <span>主动联系</span>
+            </label>
+          </div>
+          <div class="dp-name-row" style="flex-wrap:wrap">
+            <span class="dp-set-label" style="width:auto;flex:none">静默时段</span>
+            <input id="proactive-quiet-from" type="number" min="0" max="23" class="dp-name-input" style="width:56px" value="23" />
+            <span>点 至</span>
+            <input id="proactive-quiet-to" type="number" min="0" max="23" class="dp-name-input" style="width:56px" value="7" />
+            <span>点</span>
+          </div>
+          <div class="dp-name-row" style="flex-wrap:wrap">
+            <span class="dp-set-label" style="width:auto;flex:none">每日开口上限</span>
+            <input id="proactive-daily-cap" type="number" min="1" max="16" class="dp-name-input" style="width:56px" value="8" />
+            <span class="dp-set-label" style="width:auto;flex:none">最小间隔(分)</span>
+            <input id="proactive-min-interval" type="number" min="5" max="240" step="5" class="dp-name-input" style="width:56px" value="20" />
+          </div>
+          <div class="dp-name-row">
+            <button id="proactive-tuning-save" class="dp-mini-btn">保存主动参数</button>
+            <span class="dp-panel-hint" id="proactive-tuning-hint">重启后生效</span>
+          </div>
+          <div class="dp-care-sub">🔌 服务</div>
+          <div class="dp-svc-card">
+            <div class="dp-svc-title">🚀 开机自启</div>
+            <div class="dp-name-row">
+              <button id="btn-autostart" class="dp-mini-btn">🚀 开机自启：读取中…</button>
+            </div>
+            <div class="dp-svc-title">🤖 官方 DeepSeek Harness</div>
+            <div class="dp-panel-hint" id="harness-status">检测中…</div>
+            <div class="dp-panel-hint" id="harness-detail"></div>
+            <div class="dp-name-row">
+              <button id="btn-harness-ensure" class="dp-mini-btn">重新检测并接入</button>
+            </div>
+          </div>
+          <div class="dp-care-sub" data-clean-hidden="update">🔄 软件更新</div>
+          <div class="dp-name-row" data-clean-hidden="update">
+            <span class="dp-set-label" style="flex:none;width:auto">当前版本 v<span id="cur-ver">-</span></span>
+            <button id="btn-update-check" class="dp-mini-btn">检查更新</button>
+          </div>
+          <div class="dp-name-row" data-clean-hidden="update">
+            <input id="update-source" class="dp-name-input" maxlength="120" placeholder="更新源地址（留空 = 不检查）" />
+            <button id="update-source-save" class="dp-mini-btn">保存</button>
+          </div>
+          <div id="update-status" class="dp-panel-hint" data-clean-hidden="update"></div>
+          <div id="update-progress-wrap" class="dp-update-bar-wrap hidden" data-clean-hidden="update">
+            <div id="update-progress-fill" class="dp-update-fill" style="width:0%"></div>
+            <span id="update-progress-text" class="dp-update-pct">0%</span>
+          </div>
+          <div id="update-actions" data-clean-hidden="update"></div>
+          <div class="dp-name-row" data-clean-hidden="update">
+            <button id="btn-uc-refresh" class="dp-mini-btn">刷新状态</button>
+          </div>
+          <div class="dp-name-row" data-clean-hidden="update">
+            <span class="dp-set-label" style="flex:none;width:auto">🤖 模型：<span id="uc-model">-</span></span>
+          </div>
+          <div id="uc-status" class="dp-panel-hint" data-clean-hidden="update"></div>
+          <div class="dp-care-sub">🔔 提示音</div>
+          <div class="dp-name-row">
+            <button id="btn-sound" class="dp-mini-btn">🔊 提示音：开</button>
+            <input id="volume-range" type="range" min="0" max="100" step="5" value="80" />
+            <span id="volume-val" style="font-size:12px;width:34px;text-align:right">80</span>
+          </div>
+          <div class="dp-name-row" style="flex-wrap:wrap;gap:6px">
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-report" /><span>汇报卡</span></label>
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-achievement" /><span>成就照片</span></label>
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-chat" /><span>聊天</span></label>
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-proactive" /><span>主动联系</span></label>
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-reminder" /><span>提醒</span></label>
+            <label class="dp-switch-row"><input type="checkbox" id="snd-evt-ui" /><span>界面反馈</span></label>
+          </div>
+          <div class="dp-care-sub">💧 喝水提醒间隔（分钟）</div>
+          <div class="dp-name-row">
+            <input id="hydrate-interval" class="dp-name-input" type="number" min="15" max="240" step="5" value="45" />
+            <button id="hydrate-save" class="dp-mini-btn">保存</button>
+          </div>
+        </div>
+
+        <div id="tab-shop" class="dp-tab-pane hidden">
+          <div id="shop-picker" class="dp-interact-picker">
+            <button id="shop-cat-all" class="dp-tab dp-tab-active" title="全部商品">全部</button>
+            <button id="shop-cat-meal" class="dp-tab" title="餐点">🍽️ 餐点</button>
+            <button id="shop-cat-drink" class="dp-tab" title="饮品">🥤 饮品</button>
+            <button id="shop-cat-gift" class="dp-tab" title="心意礼物">💝 心意礼物</button>
+            <button id="shop-cat-fun" class="dp-tab" title="娱乐">🎲 娱乐</button>
+          </div>
+          <div id="shop-items"></div>
+        </div>
+
+        <div id="tab-game" class="dp-tab-pane hidden">
+          <div class="dp-interact-picker">
+            <button id="pick-game" class="dp-tab dp-tab-active" title="迷你游戏">🎮 游戏</button>
+            <button id="pick-rest" class="dp-tab" title="设定时间休息，恢复心情和精力">😴 休息</button>
+            <button id="pick-clean" class="dp-tab" title="调用 DeepSeek 安全清理系统垃圾">🧹 清洁</button>
+            <button id="pick-work" class="dp-tab" title="选一份工作，挂机完成赚金币与经验">💼 工作</button>
+          </div>
+
+          <div id="interact-game">
+            <div class="dp-game-picker">
+              <button id="pick-catch" class="dp-tab dp-tab-active">🍪 接饼干</button>
+              <button id="pick-snake" class="dp-tab">🐍 贪吃蛇</button>
+              <button id="pick-t2048" class="dp-tab">🔢 2048</button>
+              <button id="pick-guess" class="dp-tab">❓ 猜数字</button>
+              <button id="pick-ttt" class="dp-tab">⭕ 井字棋</button>
+              <button id="pick-sudoku" class="dp-tab">📘 数独</button>
+              <button id="pick-gomoku" class="dp-tab">⚫ 五子棋</button>
+              <button id="pick-mines" class="dp-tab">💣 扫雷</button>
+            </div>
+
+          <div id="game-catch">
+            <div class="dp-panel-hint">方向键/鼠标移动篮子，接 🍪 🪙 躲 💣，30 秒一局</div>
+            <div class="dp-game-top">
+              <span id="game-time" class="dp-game-time">⏱ 30s</span>
+              <span id="game-score" class="dp-game-score">得分 0</span>
+            </div>
+            <canvas id="game-canvas" width="330" height="190"></canvas>
+            <div class="dp-game-row">
+              <button id="btn-game" class="dp-send">开始游戏 🎮</button>
+            </div>
+            <div id="game-result" class="dp-game-result hidden"></div>
+          </div>
+
+          <div id="game-snake" class="hidden">
+            <div class="dp-panel-hint">方向键 / WASD 控制</div>
+            <div class="dp-game-top">
+              <span id="snake-score" class="dp-game-score">得分 0</span>
+            </div>
+            <canvas id="snake-canvas" width="330" height="225"></canvas>
+            <div class="dp-game-row">
+              <button id="btn-snake" class="dp-send">开始游戏 🐍</button>
+            </div>
+            <div id="snake-result" class="dp-game-result hidden"></div>
+          </div>
+
+          <div id="game-t2048" class="hidden">
+            <div class="dp-game-top">
+              <span id="t2048-score" class="dp-game-score">得分 0</span>
+              <button id="btn-t2048" class="dp-mini-btn">🔄 重开</button>
+            </div>
+            <div id="t2048-grid" class="dp-t2048-grid"></div>
+            <div id="t2048-result" class="dp-game-result hidden"></div>
+          </div>
+
+          <div id="game-guess" class="hidden">
+            <div class="dp-panel-hint">1~100，7 次机会</div>
+            <div class="dp-name-row">
+              <input id="guess-input" class="dp-name-input" type="number" min="1" max="100" placeholder="输入数字" />
+              <button id="guess-btn" class="dp-mini-btn">猜！</button>
+              <button id="guess-reset" class="dp-mini-btn">🔄 重开</button>
+            </div>
+            <div id="guess-log" class="dp-guess-log dp-muted">输入你的第一个猜测～</div>
+            <div id="guess-result" class="dp-game-result hidden"></div>
+          </div>
+
+          <div id="game-ttt" class="hidden">
+            <div class="dp-panel-hint">你执 ⭕ 先手</div>
+            <div id="ttt-grid" class="dp-ttt-grid"></div>
+            <div id="ttt-result" class="dp-game-result hidden"></div>
+            <div class="dp-game-row">
+              <button id="ttt-reset" class="dp-mini-btn">🔄 重开</button>
+            </div>
+          </div>
+
+          <div id="game-sudoku" class="hidden">
+            <div class="dp-panel-hint">点格子选中，数字键或按键填数；✏️ 笔记标候选数</div>
+            <div class="dp-game-top">
+              <span id="sudoku-meta" class="dp-game-time">😊 初级</span>
+              <button id="btn-sudoku-notes" class="dp-mini-btn">✏️ 笔记：关</button>
+              <button id="btn-sudoku-new" class="dp-mini-btn">🔄 新一局</button>
+            </div>
+            <div class="dp-sudoku-levels">
+              <button class="dp-mini-btn dp-sudoku-lv" data-level="easy">😊 初级</button>
+              <button class="dp-mini-btn dp-sudoku-lv" data-level="mid">🙂 中级</button>
+              <button class="dp-mini-btn dp-sudoku-lv" data-level="hard">😈 高级</button>
+            </div>
+            <div class="dp-sudoku-layout">
+              <div id="sudoku-grid" class="dp-sudoku-grid"></div>
+              <div class="dp-sudoku-pad">
+                <button class="dp-sudoku-key" data-n="1">1</button>
+                <button class="dp-sudoku-key" data-n="2">2</button>
+                <button class="dp-sudoku-key" data-n="3">3</button>
+                <button class="dp-sudoku-key" data-n="4">4</button>
+                <button class="dp-sudoku-key" data-n="5">5</button>
+                <button class="dp-sudoku-key" data-n="6">6</button>
+                <button class="dp-sudoku-key" data-n="7">7</button>
+                <button class="dp-sudoku-key" data-n="8">8</button>
+                <button class="dp-sudoku-key" data-n="9">9</button>
+                <button class="dp-sudoku-key dp-sudoku-eraser" data-n="0">⌫</button>
+              </div>
+            </div>
+            <div id="sudoku-result" class="dp-game-result hidden"></div>
+          </div>
+
+          <div id="game-gomoku" class="hidden">
+            <div class="dp-panel-hint">你执 ⚫ 先手</div>
+            <div id="gomoku-board" class="dp-gomoku-board"></div>
+            <div id="gomoku-result" class="dp-game-result hidden"></div>
+            <div class="dp-game-row">
+              <button id="gomoku-restart" class="dp-mini-btn">🔄 重开</button>
+            </div>
+          </div>
+
+          <div id="game-mines" class="hidden">
+            <div class="dp-game-row">
+              <button id="btn-open-mines" class="dp-send">💣 打开扫雷窗口</button>
+            </div>
+            <div id="mines-result" class="dp-game-result hidden"></div>
+          </div>
+          </div><!-- /interact-game -->
+
+          <div id="interact-rest" class="hidden">
+            <div class="dp-name-row">
+              <span class="dp-set-label" style="flex:none;width:auto">休息时长</span>
+              <select id="rest-min" class="dp-select dp-sched-select">
+                <option value="5">5 分钟</option>
+                <option value="10" selected>10 分钟</option>
+                <option value="20">20 分钟</option>
+                <option value="30">30 分钟</option>
+                <option value="60">1 小时</option>
+              </select>
+              <button id="btn-rest-start" class="dp-send">开始休息 😴</button>
+            </div>
+            <div id="rest-status" class="dp-care-meta">未在休息</div>
+          </div>
+
+          <div id="interact-clean" class="hidden">
+            <div class="dp-game-row">
+              <button id="btn-clean-run" class="dp-send">开始清理 🧹</button>
+            </div>
+            <div id="clean-status" class="dp-care-meta">尚未清理</div>
+          </div>
+
+          <div id="interact-work" class="hidden">
+            <div id="work-list" class="dp-work-list"></div>
+            <div id="work-progress" class="hidden">
+              <div class="dp-work-progress-head">
+                <span id="work-progress-name">工作中…</span>
+                <span id="work-progress-time" class="dp-care-meta">--:--</span>
+              </div>
+              <div class="dp-update-bar-wrap">
+                <div id="work-progress-fill" class="dp-update-fill" style="width:0%"></div>
+                <span id="work-progress-pct" class="dp-update-pct">0%</span>
+              </div>
+              <div class="dp-care-meta" id="work-progress-reward">预计收益 -- 🪙</div>
+              <div class="dp-game-row">
+                <button id="btn-work-cancel" class="dp-mini-btn">✋ 提前结束（按比例结算）</button>
+              </div>
+            </div>
+            <div class="dp-care-meta" id="work-status"></div>
+            <div class="dp-care-meta" id="work-log"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="mini" class="dp-mini hidden" title="小深在这里，点我出来"></div>
+  </div>
+  <script src="birthday-card-data.js"></script>
+  <script src="lunar.js"></script>
+  <script src="animation/animation-registry.js"></script>
+  <script src="animation/animation-player.js"></script>
+  <script src="animation/animation-director.js"></script>
+  <script src="animation/animation-history.js"></script>
+  <script src="core/dev-stats.js"></script>
+  <script src="core/runtime-diagnostics.js"></script>
+  <script src="behavior/behavior-content.js"></script>
+  <script src="core/pet-state.js"></script>
+  <script src="core/scheduler.js"></script>
+  <script src="core/event-bus.js"></script>
+  <script src="behavior/behavior-director.js"></script>
+  <script src="systems/needs-system.js"></script>
+  <script src="systems/activity-system.js"></script>
+  <script src="systems/relationship-engine.js"></script>
+  <script src="systems/relationship-system.js"></script>
+  <script src="core/state-store.js"></script>
+  <script src="core/idempotency.js"></script>
+  <script src="systems/album-system.js"></script>
+  <script src="systems/achievement-system.js"></script>
+  <script src="systems/diary-system.js"></script>
+  <script src="memory/memory-store.js"></script>
+  <script src="memory/memory-message-ref.js"></script>
+  <script src="memory/memory-topic.js"></script>
+  <script src="memory/memory-query.js"></script>
+  <script src="memory/memory-engine.js"></script>
+  <script src="memory/memory-retrieval.js"></script>
+  <script src="systems/memory-system.js"></script>
+  <script src="emotion/emotion-engine.js"></script>
+  <script src="intent/intent-engine.js"></script>
+  <script src="expression/animation-metadata.js"></script>
+  <script src="expression/expression-engine.js"></script>
+  <script src="core/identity-boundary.js"></script>
+  <script src="dialogue/state-expression.js"></script>
+  <script src="life/living-presence.js"></script>
+  <script src="dialogue/prompt-config.js"></script>
+  <script src="dialogue/context-selection.js"></script>
+  <script src="life/conversation-policy.js"></script>
+  <script src="life/pet-life.js"></script>
+  <script src="dialogue/slots.js"></script>
+  <script src="life/state-tier.js"></script>
+  <script src="dialogue/gen2.js"></script>
+  <script src="diary/diary-gen2.js"></script>
+  <script src="dialogue/aigateway.js"></script>
+  <script src="dialogue/dialogue-engine.js"></script>
+  <script src="diary/diary-day.js"></script>
+  <script src="diary/diary-engine.js"></script>
+  <script src="core/character-snapshot.js"></script>
+  <script src="integrations/dsh-client.js"></script>
+  <script src="ui/ui-adapter.js"></script>
+  <script src="games/game-bridge.js"></script>
+  <!-- Perception Core（共享层，M0-M5 + H） -->
+  <script src="perception/core/hash.js"></script>
+  <script src="perception/core/observation.js"></script>
+  <script src="perception/core/events.js"></script>
+  <script src="perception/core/throttle.js"></script>
+  <script src="perception/sensors/vision/vocab.js"></script>
+  <script src="perception/sensors/hearing/vocab.js"></script>
+  <script src="perception/core/state.js"></script>
+  <script src="perception/sensors/vision/detectors.js"></script>
+  <script src="perception/sensors/hearing/detectors.js"></script>
+  <script src="perception/core/router.js"></script>
+  <script src="perception/core/writers.js"></script>
+  <script src="perception/core/pipeline.js"></script>
+  <!-- 兼容别名（旧路径仍可用） -->
+  <script src="perception/observation.js"></script>
+  <script src="perception/detectors.js"></script>
+  <script src="perception/router.js"></script>
+  <script src="perception/writers.js"></script>
+  <script src="perception/index.js"></script>
+  <script src="pet.js"></script>
+  <script src="context/context.js"></script>
+  <script src="persona/persona-core.js"></script>
+</body>
+</html>
