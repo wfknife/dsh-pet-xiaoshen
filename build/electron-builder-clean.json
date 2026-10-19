@@ -9,19 +9,44 @@
     "url": "https://example.com/updates"
   },
   "files": [
+    "build/version-compare.js",
+    "custom-model-store.cjs",
+    "dsh-compat.js",
+    "dsh-lifecycle.js",
     "main.js",
-    "state-store.cjs",
+    "model-candidate.js",
+    "model-config.cjs",
+    "model-provider.cjs",
+    "model-registry.js",
+    "model-validator-real.js",
+    "model-validator.js",
+    "official-harness.js",
     "pet-life-store.cjs",
+    "platform-domain.cjs",
+    "platform-packages.cjs",
+    "platform-store.cjs",
+    "platform-worker.cjs",
     "preload.js",
+    "prompt-defaults.json",
+    "prompt-store.cjs",
+    "state-store.cjs",
+    "update-manager.js",
+    "userdata-isolation.js",
     "renderer/**/*",
+    "!renderer/prompt-manager*",
+    "!renderer/prompt-workflows.js",
+    "!prompt-manager*",
+    "!prompt-sample-runner.cjs",
     "package.json",
-    "!build/**",
+    "trusted-extensions/**/*",
     "!node_modules/electron-updater/**",
-    "!node_modules/elevate/**"
+    "!node_modules/elevate/**",
+    "character/**/*"
   ],
   "asarUnpack": [
     "node_modules/koffi/**",
-    "node_modules/ws/**"
+    "node_modules/ws/**",
+    "node_modules/better-sqlite3/**"
   ],
   "extraResources": [
     {
@@ -51,5 +76,7 @@
     "include": "build/installer.nsh",
     "artifactName": "deskpet-setup-clean-${version}.${ext}"
   },
-  "artifactName": "deskpet-setup-clean-${version}.${ext}"
+  "artifactName": "deskpet-setup-clean-${version}.${ext}",
+  "npmRebuild": false,
+  "beforePack": "./build/prepare-native.cjs"
 }

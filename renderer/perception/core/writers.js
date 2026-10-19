@@ -25,6 +25,11 @@
   }
 
   function writeExpress(plan, ctx) {
+    if (ctx && typeof ctx.requestExpression === 'function') {
+      ctx.requestExpression(plan, EXPRESS_INTENT[plan.kind] || null)
+      return { ok: true, queued: true, said: null }
+    }
+    if (window.RoleRuntime) return { ok: false, reason: 'runtime_authorization_required' }
     if (!ctx || typeof ctx.say !== 'function') return { ok: false, reason: 'no_say' }
     let line = null
     if (typeof ctx.pickLine === 'function') line = ctx.pickLine(plan)

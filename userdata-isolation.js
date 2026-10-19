@@ -172,6 +172,11 @@ function resolveUserData(input) {
 
   /* 开发态：保持现状（main.js 不 setPath，DATA_DIR=__dirname/data） */
   if (!i.isPackaged) {
+    if (i.env && i.env.DESKPET_CHARACTER_TRIAL_DATA) {
+      const guard = canonicalGuard(i.env.DESKPET_CHARACTER_TRIAL_DATA, ctx, { create: i.createTestDir === true })
+      return Object.assign({}, base, { ok: guard.ok, edition: 'test', source: 'character-trial',
+        dir: guard.canonical, canonicalDir: guard.canonical, refusals: guard.refusals })
+    }
     return Object.assign({}, base, { edition: 'dev', source: 'dev-dir', dir: i.devDir || null })
   }
 

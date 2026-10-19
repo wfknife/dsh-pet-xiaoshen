@@ -6,6 +6,7 @@
   <title>deskpet</title>
   <link rel="stylesheet" href="pet.css" />
   <link rel="stylesheet" href="pet-sprite.css" />
+  <link rel="stylesheet" href="model-settings.css" />
 </head>
 <body>
   <div id="stage" class="dp-stage">
@@ -378,31 +379,28 @@
               <span>👀 环境感知</span>
             </label>
           </div>
-          <div class="dp-care-sub">🧠 模型与 API</div>
-          <div class="dp-name-row">
-            <span class="dp-set-label" style="flex:none;width:auto">API 地址</span>
-            <input id="api-base-url" class="dp-name-input" style="flex:1" placeholder="留空 = https://api.deepseek.com" />
-          </div>
-          <div class="dp-name-row">
-            <span class="dp-set-label" style="flex:none;width:auto">API Key</span>
-            <input id="api-key" type="password" class="dp-name-input" style="flex:1" autocomplete="off" placeholder="留空 = 用本机已保存的凭据" />
-            <datalist id="model-id-list"></datalist>
-          </div>
-          <div class="dp-name-row">
-            <button id="api-save" class="dp-mini-btn">保存</button>
-            <button id="api-clear-key" class="dp-mini-btn">清除 Key</button>
-          </div>
-          <div class="dp-panel-hint" id="api-hint" role="status">正在读取…</div>
-          <div class="dp-name-row">
-            <span class="dp-set-label" style="flex:none;width:auto">聊天模型</span>
-            <input id="chat-model-select" class="dp-name-input" style="flex:1" list="model-id-list" placeholder="留空 = 用默认模型" />
-          </div>
-          <div id="chat-model-hint" class="dp-panel-hint"></div>
-          <div class="dp-name-row">
-            <span class="dp-set-label" style="flex:none;width:auto">场景覆盖</span>
-          </div>
-          <div id="scene-model-list" class="dp-scene-models">
-            <div class="dp-panel-hint">正在读取…</div>
+          <div class="dp-care-sub">🧠 AI 模型</div>
+          <div id="model-settings-root" class="model-settings">
+            <div id="model-connections" class="ms-form">
+              <div class="ms-field"><label for="model-provider-select">服务</label><div class="ms-actions"><select id="model-provider-select" class="dp-name-input"></select><button id="model-provider-new" class="dp-mini-btn" type="button">＋ 添加</button></div></div>
+              <div class="ms-field"><label for="model-protocol">类型</label><select id="model-protocol" class="dp-name-input"><option value="openai">OpenAI 兼容（含 DeepSeek / 中转）</option><option value="openai-responses">OpenAI Responses</option><option value="ollama">Ollama（本地模型）</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini</option></select></div>
+              <div id="model-protocol-hint" class="ms-help"></div>
+              <div class="ms-field"><label for="api-base-url">服务地址</label><input id="api-base-url" class="dp-name-input" placeholder="填写服务地址"/></div>
+              <div class="ms-field"><label for="api-key">API 密钥</label><input id="api-key" class="dp-name-input" type="password" autocomplete="off"/></div>
+              <div class="ms-actions"><button id="api-save" class="dp-mini-btn" type="button">获取模型列表</button><span id="model-default-hint" class="ms-help" aria-live="polite"></span></div>
+              <div class="ms-field"><label for="model-choice">模型</label><select id="model-choice" class="dp-name-input" aria-describedby="model-choice-hint"></select></div>
+              <div class="ms-actions"><button id="model-choice-save" class="dp-mini-btn ms-primary" type="button">使用此模型</button><button id="model-test" class="dp-mini-btn" type="button" title="发送一次简短请求，可能产生费用">测试（可能计费）</button></div>
+              <div id="model-choice-hint" class="ms-help"></div>
+            </div>
+            <div id="model-status" class="ms-status" role="status" aria-live="polite">正在读取配置…</div>
+            <details class="ms-advanced"><summary>高级设置与手动模型</summary><div class="ms-fields">
+              <div class="ms-field"><label for="model-provider-name">服务名称</label><input id="model-provider-name" class="dp-name-input" /></div><div class="ms-field"><label for="model-auth">认证方式</label><select id="model-auth" class="dp-name-input"><option value="auto">自动（本机免密钥）</option><option value="none">无需认证</option><option value="bearer">Bearer 密钥</option><option value="api-key">API Key 请求头</option></select></div><div class="ms-field"><label for="model-key-header">密钥请求头</label><input id="model-key-header" class="dp-name-input" placeholder="例如 api-key" /></div><div class="ms-field"><label for="model-temperature">温度参数</label><select id="model-temperature" class="dp-name-input"><option value="auto">自动兼容</option><option value="omit">不发送</option><option value="send">按功能参数发送</option></select></div><div class="ms-field"><label for="model-token-param">输出长度参数</label><select id="model-token-param" class="dp-name-input"><option value="auto">自动兼容</option><option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option><option value="none">不发送（OpenAI 兼容）</option></select></div><div class="ms-field"><label for="model-output-limit">输出上限</label><input id="model-output-limit" class="dp-name-input" type="number" min="1" max="65536"/></div><div class="ms-field"><label for="model-timeout">超时（毫秒）</label><input id="model-timeout" class="dp-name-input" type="number" min="1000" max="600000"/></div><div class="ms-field"><label for="model-thinking">思考参数</label><select id="model-thinking" class="dp-name-input"><option value="auto">按协议处理</option><option value="deepseek">DeepSeek 兼容扩展</option></select></div>
+              <div class="ms-field"><label for="model-default">模型 ID</label><input id="model-default" class="dp-name-input" list="model-id-list" placeholder="输入模型 ID 或读取列表"/></div>
+              <datalist id="model-id-list"></datalist>
+              <p class="ms-help">服务不支持模型列表时可手动填入 ID，再点击“获取模型列表”保存。</p>
+              <div class="ms-actions"><button id="model-refresh" class="dp-mini-btn" type="button">重试已保存连接</button><button id="api-clear-key" class="dp-mini-btn ms-danger" type="button">清除密钥</button><button id="model-provider-delete" class="dp-mini-btn ms-danger" type="button">删除服务</button></div>
+            </div></details>
+            <details id="model-functions" class="ms-advanced"><summary>功能自定义</summary><p class="ms-help">各功能自动使用所选模型，需要单独设置时开启自定义。</p><div id="model-routes"></div></details>
           </div>
           <div class="dp-care-sub">💬 主动联系</div>
           <div class="dp-name-row">
@@ -674,9 +672,13 @@
   <script src="behavior/behavior-content.js"></script>
   <script src="core/pet-state.js"></script>
   <script src="core/scheduler.js"></script>
+  <script src="core/character-runtime.js"></script>
+  <script src="core/capabilities.js"></script>
+  <script src="core/presentation-plan.js"></script>
   <script src="core/event-bus.js"></script>
   <script src="behavior/behavior-director.js"></script>
   <script src="systems/needs-system.js"></script>
+  <script src="systems/nurture-rules.js"></script>
   <script src="systems/activity-system.js"></script>
   <script src="systems/relationship-engine.js"></script>
   <script src="systems/relationship-system.js"></script>
@@ -701,10 +703,14 @@
   <script src="life/living-presence.js"></script>
   <script src="dialogue/prompt-config.js"></script>
   <script src="dialogue/context-selection.js"></script>
+  <script src="dialogue/context-projector.js"></script>
+  <script src="dialogue/evidence-claims.js"></script>
   <script src="life/conversation-policy.js"></script>
   <script src="life/pet-life.js"></script>
   <script src="dialogue/slots.js"></script>
+  <script src="dialogue/style/style-policy.js"></script>
   <script src="life/state-tier.js"></script>
+  <script src="core/speech-channel.js"></script>
   <script src="dialogue/gen2.js"></script>
   <script src="diary/diary-gen2.js"></script>
   <script src="dialogue/aigateway.js"></script>
@@ -734,8 +740,10 @@
   <script src="perception/router.js"></script>
   <script src="perception/writers.js"></script>
   <script src="perception/index.js"></script>
+  <script src="model-settings.js"></script>
   <script src="pet.js"></script>
   <script src="context/context.js"></script>
   <script src="persona/persona-core.js"></script>
+  <script src="character-view.js"></script>
 </body>
 </html>

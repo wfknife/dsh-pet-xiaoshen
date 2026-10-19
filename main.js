@@ -6,7 +6,7 @@ function dshJobMode() {
 }
 
 /* P1-K.2 P1：取回层模式（legacy=自研下载器；pacote=pacote manifest + 自研 hop 下载 + pacote 解包校验） */
-const { app, BrowserWindow, ipcMain, screen, shell, dialog, Tray, Menu, nativeImage, powerMonitor } = require('electron')
+const { app, BrowserWindow, ipcMain, screen, shell, dialog, Tray, Menu, nativeImage, powerMonitor, utilityProcess } = require('electron')
 // A launcher may close its console pipe while the desktop app stays alive.
 // EPIPE is not an application failure; preserve every other stream error.
 for (const stream of [process.stdout, process.stderr]) {
@@ -91,18 +91,220 @@ if (!UDR.ok) {
 }
 const RUNTIME_INFO = { edition: UDR.edition, userDataSource: UDR.source, dataDir: app.getPath('userData') }
 // 数据目录：打包后落在用户目录（安装目录无写权限）
-const DATA_DIR = app.isPackaged ? app.getPath('userData') : path.join(__dirname, 'data')
+const DATA_DIR = UDR.edition !== 'dev' ? app.getPath('userData') : path.join(__dirname, 'data')
+const CHARACTER_TRIAL = UDR.ok && UDR.source === 'character-trial' && characterKernelMode() === 'candidate'
+const platformStore = require('./platform-store.cjs').createStore(DATA_DIR, { migrate: TEST_EDITION && !CHARACTER_TRIAL,
+  readOnly: CHARACTER_TRIAL || characterKernelMode() === 'active' })
+
+/* ===== 长驻角色内核 Host（K2/K8）：默认 mode=off，不改变当前正式行为 =====
+   开关：DESKPET_CHARACTER_KERNEL=off|candidate|active（默认 off）。
+   candidate 使用隔离目录 <DATA_DIR>/character-candidate，可整目录丢弃回退；
+   active 使用 <DATA_DIR>/character，只有用户明确切换后才允许（步骤见
+   research-library/topics/long-lived-character/implementation/PROGRESS.md）。
+   mode=off 时下列 handler 全部返回 off，不启动子进程、不写任何新文件。 */
+function characterKernelMode() {
+  return require('./character/config.cjs').readMode(process.env)
+}
+/* 内核能力授权来自主人许可，不由插件或模型自报。
+   本地虚拟动作（改自身状态、写自己的笔记、说话）是既有产品行为的延续；
+   操作系统感知与任何外部副作用都必须由 prefs.characterKernel.scopes 明确追加。 */
+function characterGrantedScopes() {
+  const base = ['character:state:write', 'character:artifact:write', 'presentation:text', 'presentation:animation']
+  try {
+    const prefs = loadPrefsFile() || {}
+    const extra = prefs.characterKernel && Array.isArray(prefs.characterKernel.scopes)
+      ? prefs.characterKernel.scopes.filter(scope => typeof scope === 'string' && /^[a-z0-9:_.-]{3,120}$/i.test(scope))
+      : []
+    return Array.from(new Set([...base, ...extra]))
+  } catch (err) { return base }
+}
+const characterHost = require('./character/host.cjs').createHost({
+  dataDir: DATA_DIR,
+  isolatedTrial: CHARACTER_TRIAL,
+  utilityProcess,
+  logger: (...args) => log('[character]', ...args.map(a => (typeof a === 'string' ? a : JSON.stringify(a)))),
+  webContentsProvider: () => (win && win.webContents && !win.webContents.isDestroyed() ? [win.webContents] : []),
+  handlers: {
+    'model.complete': async (params, context) => {
+      const result = await callDirectLLM({
+        purpose: params && params.purpose ? String(params.purpose).slice(0, 40) : 'character',
+        messages: Array.isArray(params && params.messages) ? params.messages.slice(0, 12) : [],
+        maxTokens: Number(params && params.maxTokens) || 700,
+        temperature: params && params.temperature !== undefined ? params.temperature : 0.4,
+        timeoutMs: Number(params && params.timeoutMs) || 45000,
+        promptStage: 'character-kernel',
+        signal: context.signal,
+      })
+      if (!result || result.ok !== true) return { ok: false, reason: String(result && result.error || 'model_unavailable').slice(0, 200) }
+      return { ok: true, text: String(result.text || result.reply || ''), model: String(result.model || 'unknown') }
+    },
+    'prompts.snapshot': () => ({ ok: true, value: promptStore.read() }),
+    'capability.grants': () => ({ ok: true, scopes: characterGrantedScopes() }),
+    'desktop.foreground': async () => {
+      if (!characterGrantedScopes().includes('os:foreground')) return { ok: false, reason: 'scope_not_granted' }
+      const value = sampleForegroundApp()
+      if (!value) return { ok: false, reason: 'sensor_unavailable' }
+      return { ok: true, value: { ...value, observedAt: Date.now() } }
+    },
+    'desktop.media': async () => {
+      if (!characterGrantedScopes().includes('os:media')) return { ok: false, reason: 'scope_not_granted' }
+      const session = pickMediaSession(smtcSnapshot && smtcSnapshot.sessions)
+      if (!session) return { ok: false, reason: 'media_session_unavailable' }
+      return { ok: true, value: { title: session.title || '', artist: session.artist || '', observedAt: smtcSnapshot.ts || Date.now() } }
+    },
+    /* DSH 任务是真实外部副作用：默认不启用。启用条件与核对方式见 PROGRESS.md K5 待执行项。 */
+    'dsh.createTask': async (input, context) => {
+      if (!characterGrantedScopes().includes('dsh:task:create') || !characterGrantedScopes().includes('external:dispatch')) return { ok: false, reason: 'scope_not_granted', mayHaveApplied: false }
+      if (TEST_EDITION && !ISOLATED_TEST) return { ok: false, reason: 'isolated_dsh_required', mayHaveApplied: false }
+      let dispatched = false
+      try {
+        const compat = getDshCompat(), options = { signal: context.signal }
+        const created = await compat.sessionCreate({ cwd: input.workspace || WORKSPACE_PATH }, options)
+        const taskId = created?.result?.ok && created.result.value?.sessionId
+        if (!taskId) return { ok: false, reason: 'dsh_session_create_failed', mayHaveApplied: false }
+        // An existing user conversation is never reused for character work.
+        dispatched = true
+        const accepted = await compat.sessionPrompt({ sessionId: taskId, mode: 'queue', content: [{ type: 'text', text: input.prompt }] }, options)
+        return accepted?.result?.ok ? { ok: true, taskId } : { ok: false, reason: 'dsh_dispatch_rejected', mayHaveApplied: false }
+      } catch (error) { return { ok: false, reason: String(error.code || error.message).slice(0, 160), mayHaveApplied: dispatched } }
+    },
+    'dsh.taskStatus': async (input, context) => {
+      if (!characterGrantedScopes().includes('dsh:task:create') || (TEST_EDITION && !ISOLATED_TEST)) return { ok: false, reason: 'scope_not_granted' }
+      const listed = await getDshCompat().sessionList({ signal: context.signal })
+      const session = listed?.result?.ok && listed.result.value?.items?.find(item => item.sessionId === input.taskId)
+      return session ? { ok: true, accepted: true, state: session.running ? 'running' : 'idle_completion_unverified' } : { ok: false, reason: 'task_not_found' }
+    },
+    'presentation.publish': intent => characterHost.publishPresentation(intent),
+  },
+})
+/* 无论 mode 与否都注册 bridge：mode=off 时返回 kernel_off，让 renderer 能明确判断
+   而不是收到 “No handler registered”。 */
+try { characterHost.registerIpc(ipcMain) } catch (err) { log('[character] registerIpc failed', err && err.message) }
+ipcMain.on('character:boot', event => { event.returnValue = { authority: CHARACTER_TRIAL, mode: characterKernelMode() } })
+ipcMain.handle('character:perception', (event, enabled) => {
+  if (!win || event.sender !== win.webContents || (enabled !== undefined && typeof enabled !== 'boolean')) return { ok: false, reason: 'not_authorized' }
+  if (enabled !== undefined) {
+    const prefs = loadPrefsFile() || {}, kernel = prefs.characterKernel || {}
+    const scopes = (kernel.scopes || []).filter(scope => !['os:foreground','os:media'].includes(scope))
+    if (enabled) scopes.push('os:foreground','os:media')
+    if (!savePrefsFile({ characterKernel: { ...kernel, scopes } })) return { ok: false, reason: 'preferences_write_failed' }
+  }
+  return { ok: true, enabled: characterGrantedScopes().includes('os:foreground') }
+})
+require('./character/legacy-bridge.cjs').installBoundary(ipcMain, {
+  owns: () => CHARACTER_TRIAL || characterKernelMode() === 'active',
+  route: async (method, event, args) => {
+    if (method === 'minesweeper:reward') {
+      const input = args[0]
+      if (!mineWin || event.sender !== mineWin.webContents || !input?.ok || typeof input.eventId !== 'string' || !['easy','mid','hard'].includes(input.level)) return { ok: false, reason: 'not_authorized' }
+      const at = Date.now(), sourceId = String(input.eventId).slice(0,160)
+      return characterHost.submit({ commandId: 'observe:' + sourceId, kind: 'world.observation', payload: { observation: { observationId: sourceId, sourceId, kind: 'game.completed', observedAt: at, freshUntil: at + 3600000,
+        payload: { actor: 'owner', observer: 'character', subject: 'owner', world: 'virtual', sourceType: 'game.completed', occurredAt: at, game: { gameId: 'mines', won: true, level: input.level, elapsedSeconds: Math.max(1, Number(input.time) || 1) } } } } })
+    }
+    const cardRead = ['state:load', 'state:read'].includes(method) && cardWin && event.sender === cardWin.webContents
+    if ((!win || event.sender !== win.webContents) && !cardRead) return { ok: false, reason: 'not_authorized' }
+    if (method === 'characterHistory:load') return (await characterHost.read({ kind: 'history' })).history || []
+    if (method === 'diary:timeline') return characterHost.read({ kind: 'diary' })
+    if (method === 'state:load' || method === 'state:read') {
+      const projection = await characterHost.read({ kind: 'projection' }), body = projection.state
+      const state = body ? { ...body.legacyUnmapped, ...body.preferences, ...body.nurture, name: body.displayName || projection.displayName,
+        stats: body.needs, relationship: body.relationship, affection: body.relationship?.affection } : null
+      return method === 'state:load' ? state : { ok: !!state, state, status: state ? 'ok' : 'kernel_unavailable' }
+    }
+    if (method === 'memory:load') return characterHost.read({ kind: 'memory' })
+    if (method === 'platform:forget') return characterHost.submit({ kind: 'owner.forget', payload: { sourceIds: args[0] } })
+    if (method === 'proactive:setEnabled') return characterHost.submit({ kind: 'system.pause', payload: { paused: !args[0] } })
+    if (method === 'proactive:getEnabled') return { enabled: !(await characterHost.read()).paused }
+    if (method === 'platform:info') return { ok: true, enabled: false, authority: 'kernel' }
+    if (method === 'platform:capabilities') return characterHost.read({ kind: 'capabilities' })
+    if (method === 'platform:capabilityInvoke') {
+      const input = args[0] || {}
+      return characterHost.submit({ commandId: String(input.requestId || ''), kind: 'capability.invoke',
+        payload: { capabilityId: input.capabilityId, input: input.input, sourceRefs: input.sourceRefs || [] } })
+    }
+    if (method === 'clean:run') return { ok: false, error: '角色接管模式下已停用旧系统清理入口。外部任务须通过已授权的能力执行。' }
+    if (method === 'platform:projection') return characterHost.read()
+    if (method === 'platform:operation') return (await characterHost.read({ kind: 'operations' })).operations?.find(item => item.operationId === args[0]) || null
+    if (method.startsWith('platform:package')) {
+      const action = method.slice('platform:package'.length).toLowerCase()
+      return characterHost.submit({ kind: 'package.manage', payload: action === 'install' ? { action, folder: args[0], trusted: true } : { action, id: args[0] } })
+    }
+    if (method === 'lifeContext:getEnabled' || method === 'diary:enabled') return { enabled: false, authority: 'kernel' }
+    return { ok: false, reason: 'kernel_authority', method }
+  },
+})
+/* 旧 IPC → 内核的唯一权威切换点（K8）。off 时完全不介入。 */
+const characterBridge = require('./character/legacy-bridge.cjs').createBridge({
+  host: characterHost,
+  mode: characterKernelMode(),
+  logger: (...args) => log('[character-bridge]', ...args.map(a => (typeof a === 'string' ? a : JSON.stringify(a)))),
+})
+const platformDomain = require('./platform-domain.cjs').createDomain(platformStore)
+ipcMain.handle('platform:capabilityInvoke', () => ({ ok: false, reason: 'kernel_authority_required' }))
+function platformResult(fn) { try { return fn() } catch (e) { return { ok: false, reason: e.message } } }
+ipcMain.handle('platform:info', () => platformResult(() => ({ ok: true, enabled: TEST_EDITION, health: platformStore.health(), policy: platformStore.snapshot().policy })))
+ipcMain.handle('platform:factBegin', (_e, input) => platformResult(() => platformStore.beginFact(input)))
+ipcMain.handle('platform:extraction', (_e, ref, result) => platformResult(() => platformStore.extraction(ref, result)))
+ipcMain.handle('platform:recover', async () => {
+  try {
+    const result = platformStore.recoverOperations(), state = platformStore.snapshot()
+    const life = await petLifeStore.load()
+    if (!life || !life.ok) throw Error(life && life.error || 'life_recovery_failed')
+    const missing = Object.values(state.operations).filter(op => op.type === 'fact' && op.status === 'completed' && op.input && !op.obligations.domainApplied)
+    for (const op of missing.slice(0, 8)) {
+      platformDomain.observeFact(op.sourceRefs[0]); platformDomain.reconcileLife(life.state, op.sourceRefs[0]); platformStore.advanceFact(op.sourceRefs[0], 'domainApplied')
+    }
+    return { ...result, domainBacklog: Math.max(0, missing.length - 8) }
+  } catch (e) { return { ok: false, reason: e.message } }
+})
+ipcMain.handle('platform:export', () => TEST_EDITION ? platformResult(() => platformStore.backup()) : { ok: false, reason: 'candidate_test_edition_required' })
+ipcMain.handle('platform:restore', (_e, backup) => TEST_EDITION ? platformResult(() => platformStore.restore(backup)) : { ok: false, reason: 'candidate_test_edition_required' })
+ipcMain.handle('platform:factState', (_e, ref) => platformResult(() => platformStore.operation('fact:' + ref)))
+ipcMain.handle('platform:factAdvance', async (_e, ref, step, detail) => {
+  try {
+    const result = platformStore.advanceFact(ref, step, detail)
+    if (step === 'memoryPersisted') {
+      platformDomain.observeFact(ref)
+      const life = await petLifeStore.load()
+      if (!life || !life.ok) throw Error(life && life.error || 'life_reconciliation_failed')
+      platformDomain.reconcileLife(life.state, ref)
+      platformStore.advanceFact(ref, 'domainApplied')
+    }
+    return result
+  } catch (e) { return { ok: false, reason: e.message } }
+})
+ipcMain.handle('platform:pendingFacts', () => platformResult(() => platformStore.pendingFacts()))
+ipcMain.handle('platform:forget', (event, refs) => {
+  const guarded = characterBridge.guard('platform:forget')
+  if (guarded) return guarded
+  const selected = Array.isArray(refs) ? refs.slice(0, 240) : []
+  const result = platformResult(() => platformStore.forget(selected))
+  if (result && result.ok) event.sender.send('characterPlatform:invalidated', { refs: selected })
+  return result
+})
+ipcMain.handle('platform:operationBegin', (_e, proposal) => platformResult(() => platformStore.beginOperation(proposal)))
+ipcMain.handle('platform:operationUpdate', (_e, id, status, receipt) => platformResult(() => platformStore.updateOperation(id, status, receipt)))
+ipcMain.handle('platform:operation', (_e, id) => platformResult(() => platformStore.operation(id)))
+ipcMain.handle('platform:projection', () => platformResult(() => platformDomain.projection()))
+ipcMain.handle('platform:select', (_e, candidates, policy) => platformResult(() => platformDomain.select(candidates, policy)))
+ipcMain.handle('platform:presented', (_e, id) => platformResult(() => platformDomain.presented(id)))
+ipcMain.handle('platform:projectStep', async (_e, id, operationId) => {
+  if (!TEST_EDITION) return { ok: false, reason: 'candidate_test_edition_required' }
+  const parent = platformStore.operation(operationId)
+  if (!parent || parent.status !== 'dispatched' || parent.capabilityId !== 'life.virtual-project') return { ok: false, reason: 'project_authorization' }
+  const authority = {}; candidateAuthorities.add(authority)
+  const result = await desktopCapabilities.execute({ id: 'delegated:' + operationId, capabilityId: 'life.virtual-project', effect: 'virtual', input: { projectId: id }, sourceRefs: parent.sourceRefs, deadline: Date.now() + 30000 }, authority)
+  candidateAuthorities.delete(authority)
+  return result && result.ok ? { ok: true, value: result.receipt.value } : result
+})
+ipcMain.handle('platform:delivery', (_e, row) => platformResult(() => platformStore.transaction(s => {
+  s.diagnostics.push({ type: 'presentation', owner: String(row.owner || '').slice(0, 180), channel: row.channel, phase: row.phase,
+    semanticId: row.semanticId || null, at: row.at, token: row.token })
+  return { ok: true }
+}, 'presentation_receipt')))
 const promptStore = require('./prompt-store.cjs').createPromptStore(DATA_DIR)
 try { if (!fs.existsSync(path.join(promptStore.dir, 'current.json'))) promptStore.save(promptStore.defaults()) } catch (e) { console.warn('[prompts]', e.message) }
 ipcMain.on('prompts:snapshot', event => { event.returnValue = promptStore.read() })
-let isolatedPromptTestJob = null
-ipcMain.handle('prompts:run-isolated', async () => {
-  if (isolatedPromptTestJob) return { ok: false, error: 'test_already_running' }
-  isolatedPromptTestJob = require('./prompt-sample-runner.cjs').run({ config: promptStore.read(), provider: callDirectLLM })
-  try { return { ok: true, value: promptStore.saveTestRun(await isolatedPromptTestJob) } }
-  catch (e) { return { ok: false, error: e.message } }
-  finally { isolatedPromptTestJob = null }
-})
 const STATE_FILE = path.join(DATA_DIR, 'pet-state.json')
 const PERSONA_FILE = path.join(DATA_DIR, 'persona.json')
 const CHARACTER_HISTORY_FILE = path.join(DATA_DIR, 'character-chat-history.json')
@@ -379,12 +581,13 @@ async function startStream() {
   const compat = getDshCompat()
   try {
     const sock = await compat.connectEvents((frame) => {
+      if (gen !== dshStreamGeneration || dshStopped) return
       if (!frame) return
       const env = frame
       const f = env && env.payload
       /* R1：先把待批准/待回答事项缓存到**主进程**，再考虑转发给渲染层 ——
          桌宠窗口不在时，手机端仍能只读看到"有东西在等你批准"（但批准只能回电脑做）。 */
-      remoteNotePending(env)
+      if (typeof remoteNotePending === 'function') remoteNotePending(env)
       if (env && env.type === 'server-request' && f && (
         f.type === 'approval/requested' || f.type === 'approval/resolved' ||
         f.type === 'question/requested' || f.type === 'question/resolved'
@@ -394,6 +597,7 @@ async function startStream() {
         }
       }
     })
+    if (gen !== dshStreamGeneration || dshStopped) { try { sock.close() } catch (e) {} return }
     dshSocket = sock
     log('dsu stream connected (mode=' + (compat.mode || 'auto') + ')')
     if (dshStreamErrLast !== null) {
@@ -408,6 +612,7 @@ async function startStream() {
       if (!dshStopped) scheduleDshReconnect()
     })
   } catch (err) {
+    if (gen !== dshStreamGeneration || dshStopped) return
     // Protocol incompatibility is NOT "process death": do not infinite-restart DSH.
     /* A10 降噪：重连每 5s 一次，同一错误（如 "DSH protocol not available"）
        曾在 pet.log 刷 1 万+行。按错误串去重：同串连续出现只计数；串变化先补一条被压总量；
@@ -447,7 +652,13 @@ function stopDshStream() {
 let officialHarnessState = { lastAttach: null, lastAttachFail: null, readyProbe: null, watchTicks: 0 }
 const officialHarnessRetry = require('./renderer/life-context/retry-backoff.js').createBackoff()
 let harnessWatchTimer = null
+let harnessAttachJob = null
 const HARNESS_WATCH_MS = 30000
+
+function harnessUserStopped() {
+  // Clean has no service lifecycle/update manager and cannot set a stop flag.
+  return typeof getUpdateManager === 'function' && getUpdateManager().dshUserStopped() === true
+}
 
 /** 把上层 dsh-compat 指向官方 Desktop 的 Host，并注入自签 cookie。
  *  dsh-compat 本来就是 cookie 认证、本来就走 `/api/remote.mux` ⇒ 这里只改两个字段，
@@ -455,21 +666,26 @@ const HARNESS_WATCH_MS = 30000
  *  用户口径＝「桌面端启动或存在时就接入，不自己拉起 3080」⇒ 探测不到或取不到密钥时
  *  只返回结构化原因并落日志，**绝不起 3080**。
  * G1：早退/失败路径过去不落日志 ⇒ pet.log 里"没跑"和"跑了被拒"长得一样。 */
-async function attachOfficialHarness(reason) {
+function attachOfficialHarness(reason) {
+  if (harnessAttachJob) return harnessAttachJob
+  harnessAttachJob = performHarnessAttach(reason).finally(() => { harnessAttachJob = null })
+  return harnessAttachJob
+}
+
+async function performHarnessAttach(reason) {
   if (reason === 'manual') officialHarnessRetry.reset()
   if (reason === 'watch' && !officialHarnessRetry.canTry(Date.now())) return { ok: false, error: 'retry_cooldown' }
-  const fb = dshLifecycleForbidden()
+  const fb = dshConnectionForbidden()
   if (fb) {
     log('official harness attach skipped', JSON.stringify({ reason, skipped: 'edition_forbidden', edition: fb.edition }))
     return { ok: false, error: 'edition_forbidden' }
   }
-  if (getUpdateManager().dshUserStopped() === true) {
+  if (harnessUserStopped()) {
     /* 必修 8 语义原样保留：用户显式停止过 ⇒ 自动路径不再接入（手动「重新检测并接入」会清掉该标记） */
     log('official harness attach skipped', JSON.stringify({ reason, skipped: 'user_stopped' }))
     return { ok: false, error: 'user_stopped' }
   }
   try {
-    await officialHarness().detectAsync({ dshHome: DSH_HOME_DIR })
     const r = await officialHarness().attach({ dshHome: DSH_HOME_DIR, log })
     if (!r || !r.ok) {
       officialHarnessRetry.fail(Date.now())
@@ -477,6 +693,8 @@ async function attachOfficialHarness(reason) {
       log('official harness attach failed', JSON.stringify({ reason, why: r && r.reason, probe: r && r.probe, error: r && r.error }))
       return r || { ok: false, error: 'no_result' }
     }
+    // Invalidate old/pending streams before rotating endpoint or credentials.
+    stopDshStream()
     const c = getDshCompat()
     /* 顺序很重要：onDshStarted() 会把 authCookie 清成 null 并清 mode/探测缓存（它是给"自拉"流程
        设计的）⇒ **必须先清缓存，再注入 baseUrl 与 cookie**，否则刚签好的 cookie 会被自己擦掉
@@ -484,13 +702,23 @@ async function attachOfficialHarness(reason) {
     try { c.onDshStarted() } catch (e) { /* ignore */ }
     c.baseUrl = r.baseUrl
     c.authCookie = r.cookie
+    const gate = await c.compatibilityGate()
+    dshStopped = false
+    if (!gate.usable) {
+      officialHarnessRetry.fail(Date.now())
+      officialHarnessState.lastAttachFail = { at: Date.now(), reason, why: 'protocol_unavailable', probe: r.probe }
+      scheduleDshReconnect()
+      return { ok: false, reason: 'protocol_unavailable' }
+    }
     officialHarnessState.lastAttach = { at: Date.now(), reason, baseUrl: r.baseUrl, expiresAt: r.expiresAt, probe: r.probe }
     officialHarnessState.lastAttachFail = null
     officialHarnessRetry.reset()
     log('official harness attached', JSON.stringify({ reason, baseUrl: r.baseUrl, expiresAt: r.expiresAt }))
-    if (dshStopped) { dshStopped = false; try { startStream() } catch (e) { /* ignore */ } }
+    if (win && !win.isDestroyed()) win.webContents.send('harness:changed')
+    try { startStream() } catch (e) { /* ignore */ }
     setTimeout(probeOfficialHarnessReady, 1500)
-    return r
+    // Auth cookies stay in the main process; IPC callers receive status only.
+    return { ok: true, baseUrl: r.baseUrl, expiresAt: r.expiresAt }
   } catch (e) {
     officialHarnessRetry.fail(Date.now())
     log('official harness attach threw', e && e.message)
@@ -503,7 +731,7 @@ async function attachOfficialHarness(reason) {
 async function harnessWatchTick() {
   try {
     officialHarnessState.watchTicks++
-    if (dshLifecycleForbidden()) return
+    if (dshConnectionForbidden()) return
     if (!officialHarnessRetry.canTry(Date.now())) return
     const gate = await getDshCompat().compatibilityGate()
     if (gate && gate.usable) { officialHarnessRetry.reset(); return }
@@ -539,6 +767,7 @@ function createWindow() {
     h,
   )
   win = new BrowserWindow({
+    show: !TEST_EDITION || !app.commandLine.hasSwitch('platform-test-hidden'),
     width: w,
     height: h,
     x: p.x,
@@ -651,9 +880,9 @@ app.whenReady().then(() => {
   /* P1-A.1 test edition：S2/S3 硬关（不写 ~/.dsh、不连 3080、不占 8787、不触网） */
   /* P1-K.2.5：完整隔离（test userData + TEST_DSH_HOME + TEST_DSH_PORT）时按生产语义启用凭据兼容与事件流，
      使 verifyActive 的 protocolUsable 能被真实确认；非隔离测试版仍然硬关（不写 ~/.dsh / 不连 3080）。 */
-  if (!TEST_EDITION || ISOLATED_TEST) {
+  if (!dshConnectionForbidden()) {
     // 官方 Desktop 管理共享凭据格式；启动联动只读接入，不替旧 CLI 重写其凭据。
-    startStream()
+    // Establish discovery/authentication before opening the event stream.
     /* P4-P2：官方 Harness 接入 —— **只接入，不自拉实例**（用户口径）。
        开机先附一次；失败不影响桌宠其他功能；Desktop 起/停由下面的 30s 轮询跟随。 */
     attachOfficialHarness('boot')
@@ -712,7 +941,7 @@ app.whenReady().then(() => {
   // 开发模式热重载：renderer 文件变化自动刷新窗口（改 UI 即时生效，免 kill/重启）
   if (!app.isPackaged) {
     try {
-      fs.watch(path.join(__dirname, 'renderer'), { recursive: true }, (_ev, f) => {
+      if (!CHARACTER_TRIAL) fs.watch(path.join(__dirname, 'renderer'), { recursive: true }, (_ev, f) => {
         if (!win || win.isDestroyed()) return
         if (f && /\.(js|css|html)$/.test(String(f))) {
           log('dev hot-reload:', f)
@@ -736,14 +965,16 @@ app.on('before-quit', (event) => {
   } catch (err) { log('before-quit lastExitTime save err', err && err.message) }
   if (memoryFlushDone) return
   if (!win || win.isDestroyed()) {
-    memoryFlushDone = true
+    event.preventDefault()
+    characterHost.stop().finally(() => { memoryFlushDone = true; app.quit() })
     return
   }
   event.preventDefault()
   let finished = false
-  const finish = () => {
+  const finish = async () => {
     if (finished) return
     finished = true
+    await characterHost.stop()
     memoryFlushDone = true
     app.quit()
   }
@@ -805,7 +1036,7 @@ ipcMain.handle('diag:runtime', () => ({
 ipcMain.handle('harness:status', async () => {
   const out = { official: null, harness: null, work: null, error: null }
   try {
-    const fb = editionForbidden()
+    const fb = dshConnectionForbidden()
     out.official = fb
       ? { unavailable: true, edition: fb.edition }
       : await officialHarness().statusAsync({ dshHome: DSH_HOME_DIR, pidFile: path.join(app.getPath('userData'), 'official-harness.pid'), log })
@@ -821,7 +1052,7 @@ ipcMain.handle('harness:status', async () => {
       attachFail: officialHarnessState.lastAttachFail,
       readyProbe: officialHarnessState.readyProbe,
       watchTicks: officialHarnessState.watchTicks,
-      userStopped: getUpdateManager().dshUserStopped() === true,
+      userStopped: harnessUserStopped(),
     }
   } catch (e) { out.error = (out.error ? out.error + ' | ' : '') + 'harness:' + String(e && e.message) }
   // 感知：共享会话库（~/.dsh）里 running 的任务——官方 Desktop 起的任务同样在此可见
@@ -837,7 +1068,7 @@ ipcMain.handle('harness:status', async () => {
 
 ipcMain.handle('harness:ensure', async () => {
   /* 手动按钮＝「重新检测并接入」：清 userStopped、重读密钥重签 cookie，**不自拉实例** */
-  try { getUpdateManager().setDshUserStopped(false) } catch (e) { /* ignore */ }
+  try { if (typeof getUpdateManager === 'function') getUpdateManager().setDshUserStopped(false) } catch (e) { /* ignore */ }
   const r = await attachOfficialHarness('manual')
   if (r && r.ok) {
     if (dshStopped) { dshStopped = false; try { startStream() } catch (e) { /* ignore */ } }
@@ -1396,56 +1627,68 @@ const CHAT_MODEL = { provider: 'deepseek-official', model: ModelRegistry.modelFo
        是整对象覆盖，两处写同一文件会互相丢键；偏好与游戏状态生命周期不同，分开更稳）
      · 生效点 = callDirectLLM（Character Chat 直连）与 applyChatModel（DSH 辅助会话）
    取值语义：null / '' = 未设偏好 = **跟随最新 Flash**（registry 的 GA 判定，将来换新自动跟）；
-             已设 = 用户显式选定的 ID（白名单外一律忽略并回退，绝不静默采用非法值）。 */
+             已设 = 用户显式选定的 ID（模型 ID 与端点绑定保存，失败保留选择并报告错误）。 */
 const PET_PREFS_FILE = path.join(DATA_DIR, 'pet-prefs.json')
-let chatModelPrefCache // undefined = 未读；null = 明确"跟随最新"；string = 用户选定
-const modelPrefCache = {} // purpose(除 character) -> undefined(未读)/null/string
+
+
+
+
+function readModelPrefs() {
+  try { const p = JSON.parse(fs.readFileSync(PET_PREFS_FILE, 'utf8')); if (!p || typeof p !== 'object' || Array.isArray(p)) throw Error('invalid preferences'); return p }
+  catch (e) { if (e.code === 'ENOENT') return {}; throw Error('configuration_error') }
+}
+function getModelConfig() { return require('./model-config.cjs').createModelConfig({ read: readModelPrefs, write: savePrefsFile, legacyKey: readDshKey }) }
+function getModelClient() {
+  let electronNet = null
+  try { const electron = require('electron'); if (electron.app && electron.app.isReady()) electronNet = electron.net } catch (e) { /* Node contract tests use their injected fetch */ }
+  // Chromium follows system/PAC proxy settings; keep transport out of protocol adapters.
+  return require('./model-provider.cjs').createClient({ fetch: (url, options) => electronNet && electronNet.fetch ? electronNet.fetch(url, Object.assign({}, options, { bypassCustomProtocolHandlers: true })) : fetch(url, options) })
+}
+function selectableForProvider(id) {
+  const view = getModelConfig().view(); if (!view.ok) return []
+  const p = view.providers.find(p => p.id === id); if (!p) return []
+  const ids = p.models.slice()
+  if (p.protocol === 'openai' && /^https:\/\/api\.deepseek\.com(?:\/v1)?$/.test(p.baseUrl)) for (const m of ModelRegistry.selectableModels()) if (!ids.includes(m.id)) ids.push(m.id)
+  for (const r of Object.values(view.routes)) if (r.effectiveProviderId === id && r.model && !ids.includes(r.model)) ids.push(r.model)
+  return ids.map(id => ({ id, name: id, custom: true }))
+}
+async function discoverModelProvider(id) {
+  const config = getModelConfig(), p = config.getProvider(id); if (!p.ok) return p
+  const r = await getModelClient().discover(p.connection), stored = config.setModels(id, r, p.revision)
+  if (!stored.ok) return stored
+  return Object.assign({}, r, { view: stored.view })
+}
+ipcMain.handle('modelConfig:get', () => getModelConfig().view())
+ipcMain.handle('modelConfig:defaultModel', (_e, value) => getModelConfig().setDefaultModel(value))
+ipcMain.handle('modelConfig:save', (_e, p) => getModelConfig().saveProvider(p))
+ipcMain.handle('modelConfig:default', (_e, id) => getModelConfig().setDefault(id))
+ipcMain.handle('modelConfig:remove', (_e, id) => getModelConfig().removeProvider(id))
+ipcMain.handle('modelConfig:route', (_e, role, value) => getModelConfig().setRoute(role, value))
+ipcMain.handle('modelConfig:probe', (_e, id) => discoverModelProvider(id))
+ipcMain.handle('modelConfig:test', async (_e, id, model) => {
+  const p = getModelConfig().getProvider(id); if (!p.ok) return p
+  return getModelClient().complete(p.connection, { model: model || p.connection.model, messages: [{ role: 'user', content: 'Reply with OK.' }], maxTokens: 32, timeoutMs: 30000 })
+})
 
 function loadPrefsFile() {
   try { return JSON.parse(fs.readFileSync(PET_PREFS_FILE, 'utf8')) } catch (err) { return {} }
 }
 
 /* 取值：`modelPrefs.<purpose>` 优先；character 兼容旧的顶层 `chatModel` 键。
-   非法/已下线的 ID 一律**忽略并回退**（绝不静默采用非法值）。 */
-function readPrefId(prefs, purpose) {
-  const p = prefs && typeof prefs === 'object' ? prefs : {}
-  const map = p.modelPrefs && typeof p.modelPrefs === 'object' ? p.modelPrefs : {}
-  const cands = purpose === 'character' ? [map.character, p.chatModel] : [map[purpose]]
-  for (const raw of cands) {
-    const id = typeof raw === 'string' ? raw.trim() : ''
-    if (id && ModelRegistry.isSelectable(id)) return id
-  }
-  return null
-}
+   已保存的合法 ID 保留；模型下线或端点故障时报告实际错误，不抹除用户选择。 */
 
-function chatModelPref() {
-  if (chatModelPrefCache !== undefined) return chatModelPrefCache
-  chatModelPrefCache = readPrefId(loadPrefsFile(), 'character')
-  return chatModelPrefCache
-}
+
+function chatModelPref() { const r = getModelConfig().resolve('character'); return r.preference || null }
 
 /* M2：**按场景**取用户偏好。只有 `CONFIGURABLE_PURPOSES`（真有独立直连调用点
    的档）才认偏好；expression/vision/work 一律返回 null（不给没接线的通道配旋钮）。 */
-function modelPrefFor(purpose) {
-  const key = ModelRegistry.isPurpose(purpose) ? purpose : ''
-  if (!key || !ModelRegistry.isConfigurablePurpose(key)) return null
-  if (key === 'character') return chatModelPref()
-  if (modelPrefCache[key] !== undefined) return modelPrefCache[key]
-  modelPrefCache[key] = readPrefId(loadPrefsFile(), key)
-  return modelPrefCache[key]
-}
+function modelPrefFor(purpose) { const r = getModelConfig().resolve(purpose); return r.preference || null }
 
 /* 写入某档偏好（'' = 恢复"跟随最新 Flash"）。返回 { ok, error }。 */
 function writeModelPref(purpose, rawId) {
-  const cur = loadPrefsFile()
-  const map = Object.assign({}, (cur.modelPrefs && typeof cur.modelPrefs === 'object') ? cur.modelPrefs : {})
-  map[purpose] = rawId || null
-  const patch = { modelPrefs: map }
-  if (purpose === 'character') patch.chatModel = rawId || null // 旧键保持同步（向后兼容）
-  if (!savePrefsFile(patch)) return { ok: false, error: 'save-failed' }
-  chatModelPrefCache = undefined
-  for (const k of Object.keys(modelPrefCache)) delete modelPrefCache[k]
-  return { ok: true }
+  const view = getModelConfig().view(); if (!view.ok) return view
+  const route = view.routes[purpose] || {}
+  return getModelConfig().setRoute(purpose, { providerId: route.providerId, model: rawId || null })
 }
 
 function savePrefsFile(patch) {
@@ -1464,25 +1707,21 @@ function savePrefsFile(patch) {
 }
 
 /* 连接凭据只留在主进程；旧用户可继续沿用官方端点的共享凭据，新端点必须自配 Key。 */
+
+
+
+
 function llmApiPref() {
-  const cur = loadPrefsFile()
-  const cfg = (cur && typeof cur.llmApi === 'object' && cur.llmApi) || {}
-  const raw = String(cfg.baseUrl || '').trim().replace(/\/+$/, '')
-  const storedKey = String(cfg.apiKey || '').trim()
-  const inheritedKey = !storedKey && cfg.credentialMode !== 'own' && (!raw || raw === 'https://api.deepseek.com') ? readDshKey() : ''
-  return {
-    baseUrl: raw || 'https://api.deepseek.com',
-    apiKey: storedKey || inheritedKey,
-    keySource: storedKey ? 'settings' : inheritedKey ? 'legacy' : 'none',
-    model: String(cfg.model || '').trim(),
-    temps: (cfg.temps && typeof cfg.temps === 'object') ? cfg.temps : {}
-  }
+  const config = getModelConfig(), view = config.view()
+  if (!view.ok) return { baseUrl: '', apiKey: '', model: '', temps: {}, configError: view.error }
+  const r = config.getProvider(view.defaultProviderId)
+  return r.ok ? Object.assign({}, r.connection, { allowNoKey: !require('./model-provider.cjs').needsKey(r.connection), keySource: view.providers.find(p => p.id === view.defaultProviderId).keySource }) : { baseUrl: '', apiKey: '', model: '', temps: {}, configError: r.error }
 }
 
 function llmApiView() {
   const c = llmApiPref()
-  return { baseUrl: c.baseUrl, hasKey: !!c.apiKey, keySource: c.keySource, model: c.model,
-    effectiveModel: c.model || effectiveChatModel() }
+  const { apiKey, ...safe } = c
+  return Object.assign(safe, { hasKey: !!apiKey, effectiveModel: effectiveChatModel() })
 }
 
 /* ---------- 端点模型：让"配置页的地址"决定"可选模型" ----------
@@ -1522,88 +1761,22 @@ function modelIdPromise(raw, setter) {
   if (r && r.ok === false) return { ok: false, error: r.error || 'store-failed' }
   return { ok: true, id: s }
 }
-function normalizeProbeListed(j) {
-  let items = []
-  if (j && Array.isArray(j.data)) items = j.data
-  else if (Array.isArray(j)) items = j
-  else if (j && Array.isArray(j.models)) items = j.models
-  else return null
-  const out = []
-  for (const x of items) {
-    const id = typeof x === 'string' ? x : (x && typeof x.id === 'string' ? x.id : null)
-    if (typeof id === 'string' && ModelRegistry.isValidModelId(id) && out.indexOf(id) < 0) out.push(id)
-    if (out.length >= 200) break
-  }
-  return out
-}
+
 /* 探测用户配置的 baseUrl 的 /models：永不抛错；结果按端点落盘（不含密钥）。 */
 async function probeCustomModels(force) {
-  const connection = llmApiPref()
-  const base = String(connection.baseUrl || '').replace(/\/+$/, '')
-  if (!base) return { ok: false, error: 'no_base_url' }
-  const store = customModelStore()
-  const cur = store.view(base)
-  /* 只有"成功探测且新鲜"才吃缓存；失败记录不阻止重试（否则配好 key 后要等 10 分钟）。 */
-  if (!force && cur.endpointOkAt && cur.endpointModels.length && Date.now() - cur.endpointOkAt < 10 * 60 * 1000) {
-    return { ok: true, cached: true, listed: cur.endpointModels.slice(0, 200), error: null, baseUrl: base }
-  }
-  if (!connection.apiKey) {
-    store.setEndpointList(base, [], 'no_key')
-    return { ok: false, error: 'no_key', listed: [], baseUrl: base }
-  }
-  const ctl = new AbortController()
-  const timer = setTimeout(() => { try { ctl.abort() } catch (e) { /* ignore */ } }, 8000)
-  let res = null
-  let errType = null
-  try {
-    res = await fetch(base + '/models', {
-      method: 'GET',
-      headers: { authorization: 'Bearer ' + connection.apiKey, accept: 'application/json' },
-      signal: ctl.signal,
-    })
-  } catch (err) {
-    errType = ctl.signal.aborted ? 'timeout' : 'network'
-  } finally { try { clearTimeout(timer) } catch (e) { /* ignore */ } }
-  if (res) {
-    if (!res.ok) errType = res.status === 401 || res.status === 403 ? 'auth' : (res.status === 404 ? 'not_supported' : 'http_' + res.status)
-    else {
-      let j = null
-      try { j = await res.json() } catch (err) { errType = 'invalid_json' }
-      if (!errType) {
-        const listed = normalizeProbeListed(j)
-        if (listed === null) errType = 'bad_shape'
-        else {
-          store.setEndpointList(base, listed, null)
-          return { ok: true, cached: false, listed, error: null, baseUrl: base }
-        }
-      }
-    }
-  }
-  store.setEndpointList(base, [], errType || 'unknown')
-  return { ok: false, error: errType || 'unknown', listed: [], baseUrl: base }
+  const config = getModelConfig(), view = config.view(); if (!view.ok) return view
+  const profile = view.providers.find(p => p.id === view.defaultProviderId)
+  if (!force && profile.modelsAt && profile.models.length && Date.now() - profile.modelsAt < 600000) return { ok: true, listed: profile.models.slice(), cached: true, baseUrl: profile.baseUrl }
+  const r = await discoverModelProvider(view.defaultProviderId)
+  return Object.assign({}, r, { listed: r.models || [], baseUrl: profile.baseUrl })
 }
 
 function saveLLMApiConfig(value) {
-  const v = value && typeof value === 'object' ? value : {}
-  const cur = loadPrefsFile()
-  const previous = cur.llmApi && typeof cur.llmApi === 'object' ? cur.llmApi : {}
-  const next = Object.assign({}, previous)
-  const base = String(v.baseUrl == null ? previous.baseUrl || '' : v.baseUrl).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/, '') || 'https://api.deepseek.com'
-  try {
-    const url = new URL(base)
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('invalid URL')
-  } catch (e) { return { ok: false, error: 'invalid_base_url' } }
-  const model = String(v.model == null ? previous.model || '' : v.model).trim()
-  if (model.length > 128 || /[\s\x00-\x1f]/.test(model)) return { ok: false, error: 'invalid_model' }
-  const key = String(v.apiKey || '').trim()
-  const changedEndpoint = base !== llmApiPref().baseUrl
-  // 留空是保留，不会把用户已有 Key 擦掉；换服务商不会暗中转发旧凭据。
-  if (v.clearKey === true || changedEndpoint) { next.apiKey = ''; next.credentialMode = 'own' }
-  if (key && v.clearKey !== true) { next.apiKey = key; next.credentialMode = 'own' }
-  next.baseUrl = base
-  next.model = model
-  if (!savePrefsFile({ llmApi: next })) return { ok: false, error: 'save_failed' }
-  return { ok: true, view: llmApiView() }
+  const config = getModelConfig(), view = config.view(); if (!view.ok) return view
+  const patch = Object.assign({}, value || {}, { id: view.defaultProviderId })
+  if (typeof patch.allowNoKey === 'boolean') patch.authMode = patch.allowNoKey ? 'none' : 'auto'
+  const r = config.saveProvider(patch)
+  return r.ok ? { ok: true, view: llmApiView() } : r
 }
 
 /* U4-c：主动策略用户调参（pet-prefs.json → proactiveTuning）；空/非法逐字回退默认。 */
@@ -1641,74 +1814,34 @@ function writeProactiveEnabled(flag) {
 /* 端点作用域的有效默认模型：用户配置的模型 > 端点探测到的第一支模型 > 官方最新 Flash。
    探测结果按 baseUrl 落盘（custom-model-store），故默认值随配置的提供商变化。 */
 function effectiveDefaultModel() {
-  return llmApiPref().model || allowedModelsFor().endpointModels[0] || ModelRegistry.latestFlashId()
+  const view = getModelConfig().view(); if (!view.ok) return null
+  const p = view.providers.find(p => p.id === view.defaultProviderId)
+  return p.model || (p.protocol === 'openai' && /^https:\/\/api\.deepseek\.com(?:\/v1)?$/.test(p.baseUrl) ? ModelRegistry.latestFlashId() : null)
 }
 
 /* 生效的 Chat 模型：Chat 偏好 → 未设则用"默认模型"（见 effectiveDefaultModel）。
    派活相关的会话模型由**派活面板 / 会话自身**管理，这里不再读 work 偏好（避免两处都能改）。 */
-function effectiveChatModel() {
-  return chatModelPref() || effectiveDefaultModel()
-}
+function effectiveChatModel() { const r = getModelConfig().resolve('character'); return r.ok ? r.model : null }
 
 /* M2 视图：只上架"真有调用点"的档（chat/diary），每档给"偏好 / 实际生效 / 是否跟随默认"。 */
 function modelPrefView() {
-  const mo = modelViewOptions()
-  const selectable = ModelRegistry.selectableModels(mo)
-  const override = llmApiPref().model
-  const purposes = ModelRegistry.configurablePurposes().map((purpose) => {
-    const pref = modelPrefFor(purpose)
-    const effective = override || pref || effectiveDefaultModel()
-    const meta = ModelRegistry.metaFor(effective)
-    return {
-      purpose,
-      preference: pref,
-      effective,
-      effectiveName: meta.name || effective,
-      effectiveLifecycle: meta.lifecycle,
-      following: !override && !pref,
-      overridden: !!override,
-    }
-  })
-  return { ok: true, selectable, purposes, custom: customModelMeta() }
+  const view = getModelConfig().view(); if (!view.ok) return view
+  return { ok: true, selectable: selectableForProvider(view.defaultProviderId), custom: customModelMeta(), purposes: ['character','diary','proactive'].map(purpose => {
+    const r = getModelConfig().resolve(purpose), route = view.routes[purpose]
+    return { purpose, preference: route.model, providerId: route.providerId, effective: r.model || null, effectiveName: r.model || '未配置', following: !route.model, overridden: false, error: r.ok ? null : r.error }
+  }) }
 }
 
 /* 设置页用：可选清单 + 当前生效 + 是否"跟随最新"。非法/已下线的偏好已在此处回退。 */
 function chatModelView() {
-  const mo = modelViewOptions()
-  const pref = chatModelPref()
-  const override = llmApiPref().model
-  const effective = override || effectiveChatModel()
-  const meta = ModelRegistry.metaFor(effective)
-  return {
-    ok: true,
-    selectable: ModelRegistry.selectableModels(mo),
-    following: !override && !pref,
-    overridden: !!override,
-    preference: pref,
-    effective,
-    effectiveName: meta.name || effective,
-    effectiveNote: meta.note || '',
-    effectiveLifecycle: meta.lifecycle,
-    custom: customModelMeta(),
-  }
+  const r = getModelConfig().resolve('character'), view = getModelConfig().view()
+  return { ok: view.ok, preference: view.ok ? view.routes.character.model : null, effective: r.model || null, effectiveName: r.model || '未配置', effectiveLifecycle: 'unknown', following: !r.preference, overridden: false, error: r.ok ? null : r.error, selectable: selectableForProvider(r.providerId), custom: customModelMeta() }
 }
 
 ipcMain.handle('chatModel:get', () => chatModelView())
 
 /* 把 Chat 档偏好应用到 DSH 辅助会话（会话属性 ⇒ 必须显式改一次才立即生效）。 */
-async function applyModelPrefToChatSession() {
-  let applied = 'no-session'
-  try {
-    const sid = loadChatSessionId()
-    if (sid) {
-      const lr = await api('session.list', {})
-      const items = (lr && lr.result && lr.result.ok && lr.result.value.items) || []
-      if (items.some((s) => s.sessionId === sid)) { await applyChatModel(sid); applied = 'applied' }
-      else applied = 'session-gone'
-    }
-  } catch (err) { applied = 'apply-failed' }
-  return applied
-}
+async function applyModelPrefToChatSession() { return 'direct-only' }
 
 ipcMain.handle('chatModel:set', async (_e, id) => {
   const raw = String(id == null ? '' : id).trim()
@@ -1824,16 +1957,8 @@ async function permissionSet(payload) {
 ipcMain.handle('permission:set', async (_e, payload) => permissionSet(payload))
 
 async function applyChatModel(sid) {
-  try {
-    await api('session.selectModel', {
-      sessionId: sid,
-      provider: CHAT_MODEL.provider,
-      /* 用户偏好（白名单内）优先；未设偏好时 = 跟随最新 Flash。
-         注意 CHAT_MODEL.model 仍是 registry 的静态声明值，这里只在**用户显式选择**时覆盖它。 */
-      model: effectiveChatModel(),
-      reasoningEffort: CHAT_MODEL.reasoningEffort,
-    })
-  } catch (err) { /* 非致命 */ }
+  // DSH owns its catalog and session models. Direct provider choices never cross here.
+  try { await api('session.selectModel', { sessionId: sid, provider: CHAT_MODEL.provider, model: CHAT_MODEL.model, reasoningEffort: CHAT_MODEL.reasoningEffort }) } catch (err) { /* nonfatal */ }
 }
 
 function loadChatSessionMeta() {
@@ -2201,6 +2326,14 @@ async function runningOwnedDshVersion(clsOverride) {
 
 /** 版本身份命令（测试版/纯净版统一拒绝的返回形状） */
 /* P1-K.2.1：完整隔离时 DSH 生命周期闸放行；系统级操作（安装/启动项/写密钥）仍走 editionForbidden() */
+// Explicit test opt-in permits attaching to Desktop, never stopping/updating it.
+function dshConnectionForbidden() {
+  // Clean removes updates/remote access, not attachment to an existing Desktop.
+  // Lifecycle operations retain their separate edition guard below.
+  if (CLEAN_EDITION) return null
+  if (!TEST_EDITION || ISOLATED_TEST || process.env.DESKPET_ATTACH_DESKTOP === '1') return null
+  return editionForbidden()
+}
 function dshLifecycleForbidden() { return ISOLATED_TEST ? null : editionForbidden() }
 function editionForbidden() {
   if (TEST_EDITION) return { ok: false, error: 'edition_forbidden', edition: 'test' }
@@ -2426,6 +2559,7 @@ function loadDailyData() {
   }
 }
 function saveDailyData(d) {
+  if (CHARACTER_TRIAL || characterKernelMode() === 'active') return false
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true })
     const tmp = DAILY_DATA_FILE + '.tmp'
@@ -2487,6 +2621,7 @@ function advanceCollectedSegment(d, now, cat) {
 }
 
 function startDailyCollector() {
+  if (CHARACTER_TRIAL || characterKernelMode() === 'active') return
   if (!isDiaryEnabled()) return
   if (dailyCollectorTimer) return // 防重入
   const sampler = osCollectorInit()
@@ -2540,7 +2675,7 @@ function categoryGuess(appName) {
 // 复用 osCollectorInit 的采样能力，不改动日记采集器（§8.1 数据源复用、开关独立）。
 // 只返回进程名与类别（高层氛围），不读窗口标题/页面内容。
 let foregroundSampler = null
-ipcMain.handle('pet:getForegroundApp', () => {
+function sampleForegroundApp() {
   try {
     if (!foregroundSampler) foregroundSampler = osCollectorInit()
     if (!foregroundSampler) return null
@@ -2549,6 +2684,58 @@ ipcMain.handle('pet:getForegroundApp', () => {
     const cat = CATEGORY_MAP[categoryKeyOf(appName)] || categoryGuess(appName)
     return { app: appName, cat }
   } catch (err) { return null }
+}
+const candidateAuthorities = new WeakSet()
+const desktopCapabilities = require('./renderer/core/capabilities.js').create({
+  store: platformStore, authorize: (authority, effect) => effect === 'read' || TEST_EDITION && effect === 'virtual' && candidateAuthorities.has(authority),
+  service: (name, input, context) => {
+    if (name === 'desktop.observe' && context.effect === 'read') { const value = sampleForegroundApp(); return value ? { ok: true, value: { ...value, sourceType: 'desktop.foreground', eventAt: Date.now(), trust: 'observation' } } : { ok: false, reason: 'desktop_unavailable' } }
+    if (name === 'life.virtual-project' && context.effect === 'virtual') return platformDomain.stepProject(input.projectId, context.operationId)
+    throw Error('host_service_denied')
+  }
+})
+desktopCapabilities.register({ id: 'desktop.observe', provider: 'builtin.desktop', version: '1', effect: 'read', timeoutMs: 5000,
+  output: require('./renderer/core/capabilities.js').SCHEMAS.desktop,
+  input: { type: 'object', properties: {}, additionalProperties: false } }, async () => {
+    const value = sampleForegroundApp()
+    return value ? { ok: true, value: { ...value, sourceType: 'desktop.foreground', eventAt: Date.now(), trust: 'observation' } } : { ok: false, reason: 'desktop_observation_unavailable' }
+  })
+desktopCapabilities.register({ id: 'life.virtual-project', provider: 'builtin.virtual-notebook', version: '1', effect: 'virtual', timeoutMs: 5000,
+  output: require('./renderer/core/capabilities.js').SCHEMAS.project,
+  input: { type: 'object', required: ['projectId'], properties: { projectId: { type: 'string', maxLength: 140 } }, additionalProperties: false } },
+  async (input, host) => platformDomain.stepProject(input.projectId, host.operationId))
+let desktopObservationSequence = 0
+const trustedPackages = require('./platform-packages.cjs').createPackages(DATA_DIR, platformStore, desktopCapabilities)
+ipcMain.handle('platform:capabilities', () => ({ ok: true, capabilities: desktopCapabilities.available(), health: desktopCapabilities.health() }))
+ipcMain.handle('platform:packageInstall', (_e, folder) => TEST_EDITION ? trustedPackages.install(folder, true) : { ok: false, reason: 'candidate_test_edition_required' })
+ipcMain.handle('platform:packageDisable', (_e, id) => TEST_EDITION ? trustedPackages.disable(id) : { ok: false, reason: 'candidate_test_edition_required' })
+ipcMain.handle('platform:packageUninstall', (_e, id) => TEST_EDITION ? trustedPackages.uninstall(id) : { ok: false, reason: 'candidate_test_edition_required' })
+ipcMain.handle('platform:packageRollback', (_e, id) => TEST_EDITION ? trustedPackages.rollback(id) : { ok: false, reason: 'candidate_test_edition_required' })
+app.whenReady().then(() => { if (TEST_EDITION && !CHARACTER_TRIAL) void trustedPackages.restore().catch(e => console.warn('[packages]', e.message)) })
+app.on('before-quit', () => { void trustedPackages.shutdown() })
+
+/* 内核启动/停止：Ready 之后才允许写；崩溃由 host 按 1/5/30 秒重启三次后转只读。
+   Renderer 重载不重建内核；真正退出应用时才停止。 */
+app.whenReady().then(() => {
+  const started = characterHost.start()
+  if (started && started.ok === false) log('[character] start blocked', JSON.stringify(started))
+  characterHost.subscribe(event => {
+    try {
+      if (win && win.webContents && !win.webContents.isDestroyed()) win.webContents.send('character:event', event)
+    } catch (err) { /* window may be gone; the kernel keeps running */ }
+  })
+})
+// Character Host is drained by the before-quit flush barrier above.
+/* 挂起/恢复形成 SystemSuspended / SystemResumed，用实际离线间隔算需求衰减（§10.4） */
+app.whenReady().then(() => {
+  try {
+    powerMonitor.on('suspend', () => { if (characterHost.isWritable()) void characterHost.submit({ commandId: 'suspend:' + Date.now(), schemaVersion: 1, kind: 'system.suspend', characterId: undefined, payload: { at: Date.now() } }) })
+    powerMonitor.on('resume', () => { if (characterHost.isWritable()) void characterHost.submit({ commandId: 'resume:' + Date.now(), schemaVersion: 1, kind: 'system.resume', characterId: undefined, payload: { at: Date.now() } }) })
+  } catch (err) { log('[character] powerMonitor hook failed', err && err.message) }
+})
+ipcMain.handle('pet:getForegroundApp', async () => {
+  const result = await desktopCapabilities.execute({ id: 'desktop:' + Date.now() + ':' + (++desktopObservationSequence), capabilityId: 'desktop.observe', effect: 'read', input: {}, deadline: Date.now() + 5000 })
+  return result.ok && result.receipt ? result.receipt.value : null
 })
 
 /* ---------- 视听说 A·听：系统媒体会话传感器（H0） ----------
@@ -2673,123 +2860,39 @@ function recordDirectModelUse(purpose, model, ok, error) {
 
 async function callDirectLLM(payload) {
   const p = payload || {}
-  const connection = llmApiPref()
-  const purpose = ModelRegistry.purposeFor(p.purpose) // character / diary / expression / work
-  const preferencePurpose = purpose === 'proactive' ? 'character' : purpose
-  /* 模型取值：调用方显式指定 > Chat 的用户偏好（白名单内，只有 character 吃）> registry 声明值。
-     用 typeof 守卫 + 内联表达式（而不是抽函数调用）：P0-A 的隔离测试会把本函数体放进 vm
-     沙箱单独执行，沙箱只造 ModelRegistry stub —— 缺 chatModelPref 时按"无偏好"处理。 */
-  const model = String(p.model || connection.model || ((preferencePurpose === 'character' && typeof chatModelPref === 'function' && chatModelPref()) || (typeof modelPrefFor === 'function' && modelPrefFor(preferencePurpose)) || (ModelRegistry.isConfigurablePurpose && ModelRegistry.isConfigurablePurpose(preferencePurpose) ? effectiveDefaultModel() : ModelRegistry.modelFor(purpose))))
-  const key = connection.apiKey
-  if (!key) {
-    recordDirectModelUse(purpose, model, false, 'no-key')
-    return { ok: false, error: 'no-key' }
-  }
-  const timeoutMs = Math.max(5000, Math.min(Number(p.timeoutMs) || 120000, 180000))
+  if (p.providerProtocol != null && p.providerProtocol !== 1) return { ok: false, error: 'unsupported_model_protocol' }
+  const purpose = ModelRegistry.purposeFor(p.purpose)
+  const route = getModelConfig().resolve(purpose, p.model)
+  if (!route.ok) return { ok: false, error: route.error, model: route.model || null, provider: 'direct', providerId: route.providerId || null }
   let messages = []
-  if (Array.isArray(p.messages) && p.messages.length) {
-    messages = p.messages.slice(0, 12)
-  } else {
-    const system = String(p.system || '').trim()
-    const user = String(p.user || p.prompt || '').trim()
-    const history = Array.isArray(p.history) ? pairAwareHistoryWindow(p.history, 20) : []
+  if (Array.isArray(p.messages) && p.messages.length) messages = p.messages.slice(0, 32)
+  else {
+    const system = String(p.system || '').trim(), user = String(p.user || p.prompt || '').trim()
     if (system.length > 64000) return { ok: false, error: 'prompt_too_long' }
     if (system) messages.push({ role: 'system', content: system })
+    const history = Array.isArray(p.history) ? pairAwareHistoryWindow(p.history, 20) : []
     for (const h of history) {
-      const role = h && h.role === 'assistant' ? 'assistant' : 'user'
-      const content = String((h && (h.text ?? h.content)) || '').trim()
-      if (content) messages.push({ role, content: content.slice(0, 8000) })
+      const content = String(h && (h.text ?? h.content) || '').trim()
+      if (content) messages.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: content.slice(0, 8000) })
     }
     if (user) messages.push({ role: 'user', content: user.slice(0, 12000) })
   }
-  if (!messages.length) {
-    recordDirectModelUse(purpose, model, false, 'empty_messages')
-    return { ok: false, error: 'empty_messages' }
-  }
-  /* M2 回退链：**只在"模型本身不可用"时**回退到最新 Flash GA，最多一次。
-     其它错误（auth / quota / timeout / network / 5xx）一律不回退：回退不会让它们变好，
-     只会重复计费并掩盖真因。回退结果如实带 `fellBackFrom`，绝不静默降级。 */
-  const fallbackModel = ModelRegistry.latestFlashId()
-  let useModel = model
-  let fellBackFrom = null
-  let temperatureOmitted = false
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const ctl = new AbortController()
-    const t = setTimeout(() => ctl.abort(), timeoutMs)
-    try {
-      const requestBody = Object.assign({
-          model: useModel,
-          messages,
-          max_tokens: Math.min(Number(p.maxTokens) || 1024, 4096),
-          stream: false
-        }, (p.thinking && typeof p.thinking === 'object') ? { thinking: { type: p.thinking.type === 'disabled' ? 'disabled' : 'enabled' } } : {}, (function () {
-          /* 温度显式配置：调用点 p.temperature 优先，其次 pet-prefs llmApi.temps[purpose]；
-             两者皆无 ⇒ 不传（服务端默认）。temperature 只是采样随机性，不映射情绪/人格。 */
-          const t = Number(p.temperature != null ? p.temperature : (connection.temps[p.purpose] ?? connection.temps[purpose]))
-          return (!temperatureOmitted && Number.isFinite(t) && t >= 0 && t <= 2) ? { temperature: t } : {}
-        })())
-      try { if (typeof promptStore !== 'undefined') promptStore.capture({ stage: p.promptStage || p.purpose || 'other', revision: p.promptRevision || 'builtin', ...requestBody }) } catch (e) { console.warn('[prompts] request preview unavailable') }
-      const res = await fetch(connection.baseUrl + '/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
-        body: JSON.stringify(requestBody),
-        signal: ctl.signal
-      })
-      if (!res.ok) {
-        let errType = 'http_' + res.status
-        if (res.status === 401 || res.status === 403) errType = 'auth'
-        if (res.status === 429) errType = 'quota'
-        /* 只有显式"模型不存在/无效/已下线"才判定为 model_invalid：
-           读响应体做关键词判定，且**响应体只用于分类、绝不记录内容**。
-           res.text 用 typeof 守卫（测试桩只提供 json()）。 */
-        if (res.status === 400 || res.status === 404) {
-          let detail = ''
-          try { if (typeof res.text === 'function') detail = String(await res.text()).slice(0, 400) } catch (e) { detail = '' }
-          if (res.status === 400 && !temperatureOmitted && /temperature/i.test(detail) && /unsupported|not supported|does not support|only.{0,30}default/i.test(detail)) {
-            temperatureOmitted = true // One explicit parameter-compatibility retry, no sampling experiment.
-            recordDirectModelUse(purpose, useModel, false, 'temperature_unsupported')
-            continue
-          }
-          if (/model/i.test(detail) && /(not\s*(exist|found)|no\s*such|invalid|unknown|deprecat|unavailable)/i.test(detail)) errType = 'model_invalid'
-        }
-        recordDirectModelUse(purpose, useModel, false, errType)
-        if (errType === 'model_invalid' && !fellBackFrom && !connection.model && connection.baseUrl === 'https://api.deepseek.com' && useModel !== fallbackModel) {
-          fellBackFrom = useModel
-          useModel = fallbackModel
-          if (typeof log === 'function') log('llm model fallback purpose=' + purpose + ' from=' + fellBackFrom + ' to=' + fallbackModel)
-          continue
-        }
-        return { ok: false, error: errType, provider: 'direct', model: useModel, ...(fellBackFrom ? { fellBackFrom } : {}) }
-      }
-      const j = await res.json()
-      const text = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content
-      // Metadata only: distinguish an exhausted output budget from an empty
-      // provider response without retaining prompts, text or reasoning.
-      const completion = {
-        finishReason: String(j && j.choices && j.choices[0] && j.choices[0].finish_reason || 'unknown').slice(0, 40),
-        tokens: Number(j && j.usage && j.usage.completion_tokens) || 0,
-        reasoningTokens: Number(j && j.usage && j.usage.completion_tokens_details && j.usage.completion_tokens_details.reasoning_tokens) || 0
-      }
-      if (!text || !String(text).trim()) {
-        recordDirectModelUse(purpose, useModel, false, 'empty')
-        return { ok: false, error: 'empty', provider: 'direct', model: useModel, completion, ...(fellBackFrom ? { fellBackFrom } : {}) }
-      }
-      recordDirectModelUse(purpose, useModel, true, null)
-      return { ok: true, text: String(text).trim(), provider: 'direct', model: useModel, completion, ...(temperatureOmitted ? { temperatureOmitted: true } : {}), ...(fellBackFrom ? { fellBackFrom } : {}) }
-    } catch (err) {
-      const msg = String((err && err.message) || err)
-      const errType = ctl.signal.aborted || /abort|timeout/i.test(msg) ? 'timeout' : 'network'
-      recordDirectModelUse(purpose, useModel, false, errType)
-      return { ok: false, error: errType, provider: 'direct', model: useModel, message: msg, ...(fellBackFrom ? { fellBackFrom } : {}) }
-    } finally {
-      // Headers may arrive promptly while the response body stalls.
-      clearTimeout(t)
-    }
-  }
-  return { ok: false, error: 'model_invalid', provider: 'direct', model: useModel }
+  const req = { model: route.model, messages, purpose, maxTokens: p.maxTokens, temperature: p.temperature == null ? route.connection.temps[p.purpose] ?? route.connection.temps[purpose] : p.temperature, timeoutMs: p.timeoutMs, thinking: p.thinking, signal: p.signal }
+  try { if (typeof promptStore !== 'undefined') promptStore.capture({ stage: p.promptStage || p.purpose || 'other', revision: p.promptRevision || 'builtin', model: req.model, messages, max_tokens: req.maxTokens, temperature: req.temperature }) } catch (e) { /* preview is optional */ }
+  const result = await getModelClient().complete(route.connection, req)
+  recordDirectModelUse(purpose, route.model, result.ok, result.error)
+  return Object.assign({}, result, { providerId: route.providerId })
 }
 
-ipcMain.handle('llm:direct', (_e, payload) => callDirectLLM(payload || {}))
+ipcMain.handle('llm:direct', async (_e, payload) => {
+  const startedAt = Date.now(), result = await callDirectLLM(payload || {})
+  platformResult(() => platformStore.transaction(s => {
+    s.diagnostics.push({ type: 'model', protocol: 1, providerProtocol: result.protocol || null, providerId: result.providerId || null, stage: String(payload && payload.promptStage || 'other').slice(0, 80), model: result.model || null,
+      ok: !!result.ok, reason: result.error || null, latencyMs: Date.now() - startedAt, completion: result.completion || null })
+    return { ok: true }
+  }, 'model_diagnostic'))
+  return result
+})
 ipcMain.handle('llmApi:get', () => llmApiView())
 ipcMain.handle('llmApi:set', (_e, v) => saveLLMApiConfig(v))
 ipcMain.handle('proactiveTuning:get', () => {
@@ -2803,9 +2906,9 @@ ipcMain.handle('proactiveTuning:set', (_e, v) => ({
 // 兼容旧 diary:talk 路径，内部已切换到统一 Direct Provider。
 ipcMain.handle('diary:talk', async (_e, promptText) => {
   if (Array.isArray(promptText)) {
-    return callDirectLLM({ messages: promptText.slice(0, 6), timeoutMs: 120000 })
+    return callDirectLLM({ purpose: 'diary', messages: promptText.slice(0, 6), timeoutMs: 120000 })
   }
-  return callDirectLLM({ user: String(promptText || ''), timeoutMs: 120000 })
+  return callDirectLLM({ purpose: 'diary', user: String(promptText || ''), timeoutMs: 120000 })
 })
 
 // Character Chat 独立 history：只保存 user/assistant 原文，不保存 CharacterContext。
@@ -2834,6 +2937,7 @@ function loadCharacterHistory() {
 }
 
 function saveCharacterHistory(history) {
+  if (CHARACTER_TRIAL || characterKernelMode() === 'active') return false
   try {
     // Refuse to overwrite an unreadable/invalid original, including explicit clear.
     // Like state-store, only ENOENT denotes first use; leave failed originals intact.
@@ -2848,13 +2952,49 @@ function saveCharacterHistory(history) {
   } catch (err) { return false }
 }
 
-ipcMain.handle('characterHistory:load', () => loadCharacterHistory())
+ipcMain.handle('characterHistory:load', () => {
+  const history = loadCharacterHistory()
+  if (!Array.isArray(history)) return history
+  try { return history.map(row => {
+    const ref = row.role === 'assistant' ? String(row.messageRef || '').replace(/^reply:/, '') : row.messageRef
+    return platformStore.deleted(ref) ? { ...row, text: '（这段来源已被遗忘）', sourcePermission: 'revoked' } : { ...row, sourcePermission: 'saved_original' }
+  }) } catch (_) { return null }
+})
+ipcMain.handle('characterHistory:source', (_e, messageRef) => {
+  const history = loadCharacterHistory()
+  if (!Array.isArray(history)) return null
+  try {
+    if (platformStore.deleted(messageRef)) return null
+    return history.find(row => row.role === 'user' && row.messageRef === messageRef) || platformStore.source(messageRef)
+  } catch (_) { return null }
+})
 
 // Daily life has its own revisioned, atomic store. A corrupt file is reported;
 // it must never be replaced with an empty life/history during startup.
 const petLifeStore = require('./pet-life-store.cjs').createStore(DATA_DIR)
-ipcMain.handle('petLife:load', () => petLifeStore.load())
-ipcMain.handle('petLife:save', (_e, state) => petLifeStore.save(state))
+let historyClearRequests = 0
+function invalidatePendingFactWork() {
+  return platformResult(() => platformStore.transaction(s => {
+    for (const op of Object.values(s.operations)) if (op.type === 'fact' && op.status === 'pending' && !op.obligations.lifeApplied) { op.status = 'invalidated'; delete op.input }
+    return { ok: true }
+  }, 'history_clear'))
+}
+ipcMain.handle('petLife:load', async () => {
+  const result = await petLifeStore.load()
+  if (!result || !result.ok) return result
+  return platformResult(() => ({ ...result, state: platformStore.filterLife(result.state) }))
+})
+ipcMain.handle('petLife:save', (_e, state, source) => {
+  const guarded = characterBridge.guard('petLife:save')
+  if (guarded) return { ok: false, error: guarded.reason }
+  return petLifeStore.save(platformStore.filterLife(state), source ? () => {
+    const history = loadCharacterHistory()
+    try {
+      const row = Array.isArray(history) && (history.find(row => row.role === 'user' && row.messageRef === source.messageRef) || platformStore.source(source.messageRef))
+      return historyClearRequests === 0 && !platformStore.deleted(source.messageRef) && row && row.ts === source.ts && row.text === source.text
+    } catch (_) { return false }
+  } : null)
+})
 /* ===== R-11 前缀学舌小修=====
    背景：投影层会**临时**给人造前缀——`[MM-DD HH:MM]`（时间标签）、`[我先开口说]`（她先开口）、
    `[关系] …（实例 …）`（回应关系行）；实测 200 条历史里有 2 条 **assistant** 正文把它们学舌写进了正文。
@@ -2883,6 +3023,8 @@ function stripProjectionPrefixes(text) {
   } catch (err) { return text }
 }
 ipcMain.handle('characterHistory:append', (_e, entry) => {
+  const guarded = characterBridge.guard('characterHistory:append')
+  if (guarded) return guarded
   const h = loadCharacterHistory()
   if (!Array.isArray(h)) return { ok: false, error: 'history_read_failed' }
   if (entry && (entry.role === 'user' || entry.role === 'assistant') && typeof entry.text === 'string' && entry.text.trim()) {
@@ -2891,7 +3033,14 @@ ipcMain.handle('characterHistory:append', (_e, entry) => {
     const item = { role: entry.role, text: (entry.role === 'assistant' ? stripProjectionPrefixes(rawText) : rawText).slice(0, 8000), ts: Date.now() }
     if (entry.messageRef) {
       const existing = h.find(row => row.messageRef === entry.messageRef)
-      if (existing) return { ok: existing.role === item.role && existing.text === item.text, count: h.length }
+      if (existing) {
+        if (existing.role !== item.role || existing.text !== item.text) return { ok: false, reason: 'history_conflict', count: h.length }
+        if (existing.role === 'user') {
+          const retained = platformResult(() => platformStore.acceptSource(existing))
+          if (!retained || retained.ok === false) return retained
+        }
+        return { ok: existing.role === item.role && existing.text === item.text, count: h.length }
+      }
     }
     if (typeof entry.messageRef === 'string' && entry.messageRef) item.messageRef = entry.messageRef
     if (entry.selfInitiated === true) item.selfInitiated = true /* P0-1d（2026-10-01）：主动开场锚点结构化保留（文本标记仍被剥，两机制独立） */
@@ -2900,9 +3049,36 @@ ipcMain.handle('characterHistory:append', (_e, entry) => {
   /* CC-2：**不许伪造成功**——写盘失败必须如实回报 ok:false。
      今天零行为变化（渲染层 4 个调用点均不看 ok）；本项只把"写失败"变成可观测事实。 */
   const savedOk = saveCharacterHistory(h)
+  if (savedOk) {
+    const item = h.at(-1)
+    if (item && item.role === 'user' && item.messageRef) {
+      const retained = platformResult(() => platformStore.acceptSource(item))
+      if (!retained || retained.ok === false) return retained
+    }
+  }
+  /* candidate 模式：把主人消息镜像给隔离内核（单向；内核结果不回写旧 store）。
+     active 模式：上面已由 guard 拦截，此处置为 no-op。
+     只有确实落盘成功的 user 行才镜像，避免把一次失败的保存“记进另一个库”。 */
+  if (savedOk) {
+    const last = h.at(-1)
+    if (last && last.role === 'user' && last.messageRef) {
+      try { characterBridge.mirrorOwnerMessage('characterHistory:append', [last]) } catch (err) { log('[character-bridge] mirror failed', err && err.message) }
+    }
+  }
   return { ok: savedOk === true, count: h.length }
 })
-ipcMain.handle('characterHistory:clear', () => { const savedOk = saveCharacterHistory([]); return { ok: savedOk === true, count: 0 } })
+ipcMain.handle('characterHistory:clear', async e => {
+  // Finish already-started life commits before invalidating their source.
+  historyClearRequests++
+  try {
+    await petLifeStore.flush()
+    const pending = invalidatePendingFactWork()
+    if (!pending || pending.ok === false) return pending
+    const savedOk = saveCharacterHistory([])
+    if (savedOk === true) e.sender.send('characterHistory:invalidated', { reason: 'history_cleared' })
+    return { ok: savedOk === true, count: 0 }
+  } finally { historyClearRequests-- }
+})
 
 // 供渲染层读取当日时间线（纯净版日记用）
 ipcMain.handle('diary:timeline', () => {
@@ -3385,6 +3561,7 @@ function logStateAudit(state) {
 }
 
 function saveStateFile(state) {
+  if (CHARACTER_TRIAL || characterKernelMode() === 'active') return false
   const result = nurtureStateStore.saveLegacy(state)
   if (!result.ok) { log('state save blocked', result.reason); return false }
   if (result.backupWarning) log('state backup mirror failed', result.backupWarning)
@@ -3398,6 +3575,8 @@ ipcMain.handle('persona:load', () => {
   return null
 })
 ipcMain.handle('persona:save', (_e, data) => {
+  const guarded = characterBridge.guard('persona:save')
+  if (guarded) return false
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true })
     const tmp = PERSONA_FILE + '.tmp'
@@ -3411,16 +3590,21 @@ ipcMain.handle('persona:save', (_e, data) => {
 
 function loadMemoryFile() {
   try {
-    if (fs.existsSync(MEMORY_FILE)) return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'))
+    if (fs.existsSync(MEMORY_FILE)) return platformStore.filterMemory(JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8')))
   } catch (err) { /* corrupted primary falls through to backup */ }
   try {
-    if (fs.existsSync(MEMORY_BACKUP)) return JSON.parse(fs.readFileSync(MEMORY_BACKUP, 'utf8'))
+    if (fs.existsSync(MEMORY_BACKUP)) return platformStore.filterMemory(JSON.parse(fs.readFileSync(MEMORY_BACKUP, 'utf8')))
   } catch (err) { /* ignore */ }
   return null
 }
 
 function saveMemoryFile(data) {
+  if (CHARACTER_TRIAL || characterKernelMode() === 'active') return false
   try {
+    const forgotten = (data && data.memories || []).filter(m => m.status === 'suppressed' && m.suppression)
+      .flatMap(m => [(m.id || ''), m.id ? 'mem:' + m.id : '', ...(m.evidenceRefs || []).map(e => e && (e.messageRef || e.eventRef))].filter(Boolean))
+    if (forgotten.length) platformStore.forget(forgotten, 'memory_removed')
+    data = platformStore.filterMemory(data)
     fs.mkdirSync(DATA_DIR, { recursive: true })
     if (fs.existsSync(MEMORY_FILE)) {
       try { fs.copyFileSync(MEMORY_FILE, MEMORY_BACKUP) } catch (err) { /* backup best-effort */ }
@@ -3435,11 +3619,19 @@ function saveMemoryFile(data) {
 }
 
 ipcMain.handle('memory:load', () => loadMemoryFile())
-ipcMain.handle('memory:save', (_e, data) => saveMemoryFile(data))
+ipcMain.handle('memory:save', (_e, data) => {
+  const guarded = characterBridge.guard('memory:save')
+  if (guarded) return false
+  return saveMemoryFile(data)
+})
 
 ipcMain.handle('state:load', () => loadStateFile())
 ipcMain.handle('state:read', event => readRendererStateFile(event))
-ipcMain.handle('state:save', (_e, state) => saveStateFile(state))
+ipcMain.handle('state:save', (_e, state) => {
+  const guarded = characterBridge.guard('state:save')
+  if (guarded) return false
+  return saveStateFile(state)
+})
 
 ipcMain.handle('pickImage', async () => {
   try {

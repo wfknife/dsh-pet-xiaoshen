@@ -323,7 +323,11 @@
         dutyEvidence: ti.dutyEvidence || [],
         random: ti.random
       }
-      const decision = deps.autonomy.decide(decideInput, policy)
+      // Runtime owns action selection. This path remains observation/domain bookkeeping.
+      const runtimeOwned = ti.runtime && ti.runtime.characterRuntime === true
+      const decision = runtimeOwned
+        ? { outcome: 'gated', gate: NULL_GATE, chosenActionId: null, reason: { kind: 'runtime_owned' } }
+        : deps.autonomy.decide(decideInput, policy)
 
       steps++ // 本轮唯一一次 step()（结构上只有一个调用点；status() 可断言 steps === ticks）
       const nextEmotion = deps.bridge.step(prevValues, {
@@ -332,7 +336,7 @@
         clock: { nowTs, prevTs: prevTickTs }
       })
 
-      const entry = deps.autonomy.toLedgerEntry(decision, decideInput)
+      const entry = runtimeOwned ? null : deps.autonomy.toLedgerEntry(decision, decideInput)
       /* R-9 收尾（用户 裁定）：把内部候选**已有**的 evidenceRefs 原样写进既有 `refs` 字段。
          · 不新增字段、不改事件语义、不改 F4/F7：只在"refs 为空 **且** 本轮选中的候选自带证据"时补；
          · 命名空间（正式固化）：`mem:`（记忆库真实 id）／`pet:`（pet-state 真实字段，如 pet:ownerBirthday／

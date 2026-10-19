@@ -86,5 +86,7 @@
     return parts.join(' ｜ ')
   }
 
-  window.__BIRTHDAY_CARD = { THEMES, TIER_NAMES, BODIES, makeCard, subText }
+  const api = { THEMES, TIER_NAMES, BODIES, makeCard, subText }
+  if (typeof module === 'object' && module.exports) module.exports = api
+  else window.__BIRTHDAY_CARD = api
 })()

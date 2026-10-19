@@ -1,0 +1,63 @@
+{
+  "id": "trusted.desktop-observer",
+  "version": "1.0.0",
+  "capabilities": [
+    {
+      "priority": 1,
+      "input": {
+        "properties": {},
+        "type": "object",
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "services": [
+        "desktop.observe"
+      ],
+      "id": "desktop.observe",
+      "output": {
+        "type": "object",
+        "required": [
+          "app",
+          "cat",
+          "sourceType",
+          "eventAt",
+          "trust"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "cat": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "sourceType": {
+            "type": "string",
+            "enum": [
+              "desktop.foreground"
+            ]
+          },
+          "eventAt": {
+            "type": "number"
+          },
+          "trust": {
+            "type": "string",
+            "enum": [
+              "observation"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "services": [
+    "desktop.observe"
+  ],
+  "files": {
+    "entry.cjs": "78f53c1e017bd6b7e6ef5f42699a1ac2906bd905279e9f24200862afca7a2674"
+  },
+  "entry": "entry.cjs",
+  "hostApi": 1
+}

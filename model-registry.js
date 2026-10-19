@@ -177,12 +177,11 @@ function isSelectable(id, opts) {
   return isValidModelId(s) && userSelectableModels(opts).indexOf(s) >= 0
 }
 
-/* 自定义模型 ID 的形状校验：非空、≤128、不含空白/控制字符、无斜杠（避免被当成路径拼接）。 */
+/* 自定义模型 ID 的形状校验：非空、≤256、不含空白/控制字符；斜杠允许用于模型命名空间。 */
 function isValidModelId(id) {
   const s = String(id == null ? '' : id).trim()
-  if (!s || s.length > 128) return false
-  if (/[\s\x00-\x1f]/.test(s)) return false
-  if (s.indexOf('/') >= 0) return false
+  if (!s || s.length > 256) return false
+  if (/[\s\x00-\x1f\x7f]/.test(s)) return false
   return true
 }
 

@@ -10,6 +10,27 @@
  *   reliable Event / explicit user input -> Candidate -> Consolidation -> Store
  */
 window.MemoryEngine = (function () {
+  if (window.pet?.character?.authority) {
+    const api = window.pet.character
+    let data = { schemaVersion: 2, memories: [] }
+    const init = async () => { const result = await api.read({ kind: 'memory' }); if (result?.ok) data = result; return data }
+    const rejected = () => ({ ok: false, reason: 'kernel_authority' })
+    const forget = async id => {
+      const row = data.memories.find(item => item.id === id)
+      if (!row) return { ok: false, reason: 'memory_missing' }
+      const result = await api.submit({ kind: 'owner.forget', payload: { sourceIds: row.sourceRefs || [] } })
+      await init(); return result
+    }
+    api.onEvent(event => { if (['ready', 'delta'].includes(event?.kind)) void init() })
+    const adapter = { init, ensure: init, getMemories: () => structuredClone(data.memories), list: () => structuredClone(data.memories),
+      getById: id => structuredClone(data.memories.find(item => item.id === id)), getStoreData: () => structuredClone(data), getData: () => structuredClone(data),
+      suppress: forget, forgetByQuery: async query => { const rows = data.memories.filter(item => item.content.includes(String(query))); return Promise.all(rows.map(row => forget(row.id))) },
+      flushAndWait: async () => ({ ok: true }), flushPersistence: async () => ({ ok: true }),
+      getDiagnostics: () => ({ owner: 'Kernel', readOnly: true }), getWriteQueue: () => ({ dirty: false }),
+      effectiveStrength: item => Number(item?.strength) || 0.7, isWriteSourceAllowed: () => false }
+    for (const name of ['addCandidate','admitCandidate','addEvent','createCandidate','remember','processUserMessage','restoreByQuery','consolidate','migrateLegacy','migrate','rollbackLegacyMigration','rollback','recordRecall','recordMention','recalculateStatus','runDecayMaintenance','invalidateSources','archive','restore','archiveByDate']) adapter[name] = rejected
+    return Object.freeze(adapter)
+  }
   const SCHEMA_VERSION = 2
   const MAX_STRENGTH = 0.95
   const ACTIVE_THRESHOLD = 0.45
@@ -364,12 +385,32 @@ window.MemoryEngine = (function () {
     return { ok: true, reason: 'reinforced', memory: deepCopy(m), confidenceDelta: increment, strengthDelta: increment }
   }
 
+  function invalidateMemoryFacts(memory, reason) {
+    const refs = new Set((memory.evidenceRefs || []).map(ref => ref && ref.messageRef).filter(Boolean))
+    if (window.RoleRuntime && window.RoleRuntime.invalidateFacts) window.RoleRuntime.invalidateFacts(reason, ref => refs.has(ref))
+    // Archive is reversible storage management. Explicit forgetting/suppression
+    // revokes the source and its memory-derived actions across backup restore.
+    if (reason === 'memory_suppressed' && memory.id) { refs.add(memory.id); refs.add('mem:' + memory.id) }
+    if (reason === 'memory_suppressed' && window.pet && window.pet.platform && refs.size) window.pet.platform.forget([...refs]).then(r => {
+      if (!r || !r.ok) console.warn('[memory] durable forget pending:', r && r.reason)
+    }).catch(e => console.warn('[memory] durable forget failed:', e.message))
+  }
+  function invalidateSources(refs) {
+    ensureData()
+    const set = new Set(refs)
+    data.memories = data.memories.filter(m => !(m.evidenceRefs || []).some(e => set.has(e.messageRef) || set.has(e.eventRef)))
+    for (const [key, row] of Object.entries(data.evidence || {})) if ((row.sourceEventIds || []).some(ref => set.has(ref) || set.has(String(ref).replace(/^conversation:/, '')))) delete data.evidence[key]
+    markMutation('source_invalidated'); commit()
+    return { ok: true }
+  }
+
   function suppress(id, reason, actor) {
     ensureData()
     const m = findMemoryById(id)
     if (!m) return { ok: false, reason: 'not_found' }
     const now = Date.now()
     m.status = 'suppressed'
+    invalidateMemoryFacts(m, 'memory_suppressed')
     m.suppression = {
       reason: reason || 'user_request',
       at: now,
@@ -963,6 +1004,7 @@ window.MemoryEngine = (function () {
     const m = findMemoryById(id)
     if (!m) return { ok: false, reason: 'not_found' }
     m.status = 'archived'
+    invalidateMemoryFacts(m, 'memory_archived')
     bumpCounter('archived')
     markMutation('archive')
     commit()
@@ -989,6 +1031,7 @@ window.MemoryEngine = (function () {
       const inner = findMemoryById(m.id)
       if (inner) {
         inner.status = 'archived'
+        invalidateMemoryFacts(inner, 'memory_archived')
         n++
       }
     }
@@ -1182,6 +1225,7 @@ window.MemoryEngine = (function () {
     recalculateStatus,
     runDecayMaintenance,
     suppress,
+    invalidateSources,
     archive,
     restore,
     archiveByDate,

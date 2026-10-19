@@ -15,6 +15,7 @@
   let timer = 0
   let timerInt = null
   let firstOpen = true
+  let gameRunId
 
   const board = document.getElementById('board')
   const resultEl = document.getElementById('result')
@@ -22,6 +23,7 @@
   const timerEl = document.getElementById('timer')
 
   function initGrid() {
+    gameRunId = 'mines:' + Date.now() + ':' + Math.random().toString(36).slice(2,8)
     const { rows, cols, mines } = LEVELS[lv]
     grid = Array.from({ length: rows }, () =>
       Array.from({ length: cols }, () => ({ mine: false, open: false, flag: false, n: 0 }))
@@ -127,7 +129,7 @@
       const bonus = Math.max(0, Math.floor((LEVELS[lv].mines * 10) / Math.max(1, timer)))
       const total = reward + bonus
       resultEl.textContent = '🎉 通关！+🪙 ' + total + '（基础 ' + reward + ' + 速通奖励 ' + bonus + '）'
-      window.pet.minesweeperReward({ ok: true, level: lv, total, reward, bonus, time: timer })
+      window.pet.minesweeperReward({ ok: true, eventId: gameRunId, level: lv, total, reward, bonus, time: timer })
       render()
     }
   }

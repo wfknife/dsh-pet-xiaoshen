@@ -22,25 +22,36 @@
     "build/version-compare.js",
     "renderer/**/*",
     "!renderer/prompt-manager*",
+    "!renderer/prompt-workflows.js",
+    "!prompt-manager*",
+    "!prompt-sample-runner.cjs",
     "package.json",
     "prompt-store.cjs",
-    "prompt-sample-runner.cjs",
-    "prompt-defaults.json"
-],
+    "prompt-defaults.json",
+    "platform-store.cjs",
+    "platform-domain.cjs",
+    "platform-packages.cjs",
+    "platform-worker.cjs",
+    "trusted-extensions/**/*",
+    "model-config.cjs",
+    "model-provider.cjs",
+    "character/**/*"
+  ],
   "asarUnpack": [
     "node_modules/koffi/**",
-    "node_modules/ws/**"
-],
+    "node_modules/ws/**",
+    "node_modules/better-sqlite3/**"
+  ],
   "extraResources": [
     {
       "from": "build/icon.ico",
       "to": "icon.ico"
     }
-],
+  ],
   "win": {
     "target": [
       "nsis"
-],
+    ],
     "icon": "build/icon.ico"
   },
   "nsis": {
@@ -53,5 +64,6 @@
   },
   "npmRebuild": false,
   "nodeGypRebuild": false,
-  "buildDependenciesFromSource": false
+  "buildDependenciesFromSource": false,
+  "beforePack": "./build/prepare-native.cjs"
 }

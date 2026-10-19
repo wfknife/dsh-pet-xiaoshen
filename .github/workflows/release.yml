@@ -1,0 +1,51 @@
+name: Build and publish Windows installers
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Regression tests
+        run: node --test tests/*.test.cjs tests/test-character-runtime.cjs tests/test-character-runtime-chat.cjs tests/test-character-runtime-integration.cjs tests/test-platform.cjs
+      - name: Build both installers
+        run: ./build/build-release-both.ps1
+      - name: Verify packages
+        run: node build/verify-dual-release.cjs
+      - name: Publish matching commit as a prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          $assets = @("dist/release/deskpet-setup-$version.exe", "dist-clean/deskpet-setup-clean-$version.exe")
+          $hashes = $assets | ForEach-Object { "$( (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() )  $(Split-Path $_ -Leaf)" }
+          $hashes | Set-Content SHA256SUMS.txt -Encoding utf8
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "桌宠小深 $version" --notes-file RELEASE-NOTES.md --prerelease --draft
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          }
+          gh release upload $tag @assets SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease
+          if ($LASTEXITCODE -ne 0) { throw 'Release publish failed' }

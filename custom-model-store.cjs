@@ -21,15 +21,14 @@ const MAX_ENDPOINTS = 12
 const MAX_IDS_PER_ENDPOINT = 200
 const MAX_CONFIRMED = 40
 const MAX_SELECTED = 20
-const MAX_ID_LEN = 128
+const MAX_ID_LEN = 256
 const MAX_BYTES = 512 * 1024
 const PURPOSES = ['character', 'diary', 'expression', 'vision', 'work']
 
 function isValidId(id) {
   const s = typeof id === 'string' ? id.trim() : ''
   if (!s || s.length > MAX_ID_LEN) return false
-  if (/[\s\x00-\x1f]/.test(s)) return false
-  if (s.indexOf('/') >= 0) return false
+  if (/[\s\x00-\x1f\x7f]/.test(s)) return false
   return true
 }
 

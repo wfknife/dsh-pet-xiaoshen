@@ -7,11 +7,56 @@
   if (typeof module === 'object' && module.exports) module.exports = mod
   else {
     root.PetLifeModule = mod
+    if (root.pet?.character?.authority) {
+      const api = root.pet.character
+      let projection = null
+      const init = async () => { const p = await api.read(); if (p?.ok) projection = p; return { ok: !!projection } }
+      api.onEvent(event => { if (event?.event?.projection) projection = event.event.projection; else if (event?.kind === 'ready') void init() })
+      const state = () => ({ ...mod.emptyState(), revision: projection?.revision || 0, threads: projection?.concerns || [], artifacts: projection?.episodes || [] })
+      const rejected = async () => ({ ok: false, reason: 'kernel_authority' })
+      const adapter = { init, snapshot: () => ({ ready: !!projection, state: state() }),
+        context: () => ({ ready: !!projection, ...state(), recentContacts: [], livingState: { resting: !!projection?.state?.attentionPolicy?.restUntil } }),
+        candidates: () => [], getArtifacts: () => projection?.episodes || [], canPlan: () => false, canPresentDecision: () => false,
+        recordEvent: event => api.observe(event), flush: async () => ({ ok: true }),
+        forgetArtifact: id => {
+          const artifact = (projection?.episodes || []).find(item => item.id === id)
+          return artifact ? api.submit({ kind: 'owner.forget', payload: { sourceIds: artifact.sourceRefs || [] } }) : rejected()
+        },
+        setVisibility: visible => api.submit({ kind: 'owner.control', payload: { action: 'visibility', visible } }) }
+      for (const name of ['tick','proposeActivity','startActivity','commitRuntimePolicy','recordTurn','invalidateSources','presented','reserveDecision','decisionFeedback']) adapter[name] = rejected
+      root.PetLife = Object.freeze(adapter)
+      void init()
+      return
+    }
     root.PetLife = mod.createSession({
       load: () => root.pet.petLifeLoad(),
-      save: state => root.pet.petLifeSave(state),
+      save: (state, source) => root.pet.petLifeSave(state, source),
+      loadSource: ref => root.pet.characterHistorySource(ref),
+      memories: () => root.MemoryEngine ? root.MemoryEngine.getMemories() : [],
       plan: input => root.AIGateway.lifePlan(input),
-      remember: candidate => root.MemoryEngine.admitCandidate(candidate)
+      runtimeOwned: () => !!root.RoleRuntime,
+      authorize: execution => !!root.RoleRuntime && root.RoleRuntime.isAuthorized(execution),
+      authorizeFacts: (permit, ref) => !!root.RoleRuntime && root.RoleRuntime.isFactAuthorized(permit, ref),
+      invalidateFacts: ref => {
+        if (root.RoleRuntime) root.RoleRuntime.invalidateFacts('source_forgotten', id => id === ref)
+        if (root.pet.platform) root.pet.platform.forget([ref]).catch(e => console.warn('[pet-life] forget:', e.message))
+      },
+      continuation: id => root.RoleRuntime && root.RoleRuntime.continuation(id),
+      remember: candidate => root.MemoryEngine.admitCandidate(candidate),
+      factBegin: input => root.pet.platform && root.pet.platform.factBegin(input),
+      factAdvance: (ref, step, detail) => root.pet.platform && root.pet.platform.factAdvance(ref, step, detail),
+      flushMemory: () => root.MemoryEngine.flushAndWait({ timeoutMs: 5000 }),
+      hasMemoryEvidence: candidate => root.MemoryEngine.getMemories().some(m => !['suppressed', 'archived'].includes(m.status) && !m.supersededBy &&
+        (candidate.sourceEventIds || []).some(id => (m.sourceEventIds || []).includes(id)) && (m.content === candidate.content || m.originalContent === candidate.content)),
+      completeOperation: async activity => {
+        if (!root.pet.platform) return
+        const id = 'activity:' + activity.runtimeExecutionId, op = await root.pet.platform.operation(id)
+        if (op && op.status === 'awaiting_receipt') {
+          const saved = await root.pet.platform.operationUpdate(id, 'completed', { ok: true, virtual: true, sourceType: 'virtual.elapsed', activityId: activity.id,
+            kind: activity.kind, eventAt: activity.finishedAt, elapsedMs: activity.elapsedMs, ownerTaskCompleted: false })
+          if (!saved || saved.ok === false) throw Error(saved && saved.reason || 'activity_receipt_save_failed')
+        }
+      }
     })
     root.PetLife.init().catch(err => console.warn('[pet-life] load failed:', err.message))
   }
@@ -244,6 +289,7 @@
   function createSession(deps) {
     let committed = emptyState(), initJob = null, queue = Promise.resolve(), planJob = null, lastTick = 0
     let ready = false, lastError = null, current = null, visibilityVersion = 0
+    const runtimeOwned = () => !!(deps.runtimeOwned && deps.runtimeOwned())
     async function init() {
       if (!initJob) initJob = Promise.resolve().then(() => deps.load()).then(r => {
         if (!r || r.ok !== true) throw Error((r && r.error) || 'life_load_failed')
@@ -254,17 +300,18 @@
       return initJob
     }
     function snapshot() { return { ready, error: lastError, state: copy(committed) } }
-    function mutate(fn) {
+    function mutate(fn, source, authorizeWrite) {
       const operation = queue.then(async () => {
         await init()
-        const next = copy(committed), result = fn(next)
+        const next = copy(committed), result = await fn(next)
         if (result && result.unchanged) return result
         next.revision = committed.revision + 1
         // The formal memory store retains important facts. This working context
         // stays bounded even after many long conversations and busy days.
         while (JSON.stringify(next).length > 470000 && next.turns.length > 40) next.turns.shift()
         while (JSON.stringify(next).length > 470000 && next.days.length > 14) next.days.shift()
-        const r = await deps.save(next)
+        if (authorizeWrite && !authorizeWrite()) return { unchanged: true, ok: false, reason: 'runtime_cancelled' }
+        const r = await deps.save(next, source)
         if (!r || r.ok !== true) throw Error((r && r.error) || 'life_save_failed')
         committed = next; lastError = null; return result
       })
@@ -274,7 +321,7 @@
     function makeDay(state, ts) {
       let day = state.days.find(d => d.date === dayOf(ts))
       if (!day) {
-        day = { date: dayOf(ts), createdAt: ts, planAttempted: false, planSource: 'local', activities: localPlan(ts), experiences: [] }
+        day = { date: dayOf(ts), createdAt: ts, planAttempted: false, planSource: 'local', activities: runtimeOwned() ? [] : localPlan(ts), experiences: [] }
         state.days.push(day); state.days = state.days.slice(-30)
       }
       return day
@@ -325,6 +372,30 @@
         })
         if (i.visible === false || i.hidden === true || (current && (current.visible === false || current.hidden === true))) {
           day.activities.filter(a => a.status === 'active').forEach(a => { a.status = 'paused'; a.pauseReason = '桌宠暂时隐藏，回来后再继续' })
+          return JSON.stringify(state) === before ? { unchanged: true } : { ok: true }
+        }
+        if (runtimeOwned()) {
+          for (const active of day.activities.filter(a => a.status === 'active')) {
+            const permit = deps.continuation && deps.continuation(active.runtimeContinuation)
+            if (!permit || i.busy) {
+              active.status = 'paused'; active.pauseReason = '等待角色运行器重新授权'; continue
+            }
+            if (active.mode === 'virtual_episode') {
+              if (ts - active.startedAt >= 3 * MINUTE) { active.status = 'paused'; active.pauseReason = '没有收到实际播放完成'; }
+              continue
+            }
+            active.elapsedMs += visibilityAtStart !== visibilityVersion ? 0 : delta
+            if (active.elapsedMs >= (active.kind === 'quiet_rest' ? 10 : 5) * MINUTE) {
+              active.status = 'done'; active.finishedAt = ts
+              experience(day, 'completed', active.resultText, ts, active.refs)
+              if (active.material || (active.kind === 'curiosity_note' && active.resultText)) addArtifact(state, {
+                id: 'artifact:' + active.id, kind: active.kind === 'revisit_memory' ? 'reflection' : active.kind === 'chat_notes' ? 'conversation_note' : 'curiosity',
+                title: active.kind === 'revisit_memory' ? '想起一件小事' : active.kind === 'chat_notes' ? '留在小记里的原话' : '一个好奇的问题',
+                text: active.resultText, evidenceQuote: active.material && active.material.text || null, material: active.material || null,
+                createdAt: ts, sourceRefs: active.refs, refs: active.refs
+              })
+            }
+          }
           return JSON.stringify(state) === before ? { unchanged: true } : { ok: true }
         }
         const needs = i.selfState || {}, em = (i.emotion && i.emotion.values) || i.emotion || {}
@@ -411,8 +482,9 @@
         if (JSON.stringify(state) === before) return { unchanged: true }
         return { ok: true }
       })
+      if (deps.completeOperation) for (const activity of committed.days.flatMap(day => day.activities).filter(a => a.status === 'done' && a.mode !== 'virtual_episode' && a.runtimeExecutionId)) await deps.completeOperation(copy(activity))
       const today = committed.days.find(d => d.date === dayOf(ts))
-      if (i.aiEnabled && !i.busy && i.visible !== false && i.hidden !== true && !(current && (current.visible === false || current.hidden === true)) && today && !today.planAttempted && !planJob && typeof deps.plan === 'function') {
+      if (!runtimeOwned() && i.aiEnabled && !i.busy && i.visible !== false && i.hidden !== true && !(current && (current.visible === false || current.hidden === true)) && today && !today.planAttempted && !planJob && typeof deps.plan === 'function') {
         // Persist the attempt before calling AI: restart cannot repeat a daily request.
         planJob = mutate(state => { makeDay(state, ts).planAttempted = true }).then(() => deps.plan({
           nowTs: ts, context: context(ts), persona: i.persona, selfState: i.selfState, emotion: i.emotion,
@@ -433,6 +505,61 @@
       }
       return context(ts)
     }
+    function proposeActivity(input) {
+      if (!ready || input.busy || input.visible === false) return null
+      const ts = Number(input.nowTs), state = copy(committed)
+      const day = state.days.find(d => d.date === dayOf(ts)) || { date: dayOf(ts), activities: [] }
+      if (day.activities.some(a => a.status === 'active')) return null
+      const tired = Number(input.selfState && input.selfState.energy) < 30 || Number(input.emotion && input.emotion.values && input.emotion.values.fatigue) >= 0.7 ||
+        Number(input.selfState && input.selfState.satiety) < 20 || Number(input.selfState && input.selfState.thirst) < 20
+      let activity = day.activities.find(a => !a.abandoned && !(a.retryAt > ts) && ['paused', 'planned'].includes(a.status) &&
+        (!tired || a.kind === 'quiet_rest') && (a.kind !== 'revisit_memory' || chooseMemory(a, input.memories, state)))
+      if (!activity) {
+        const episode = !tired && availableEpisode(input, { ...state, quietUntil: 0 }, ts)
+        activity = episode ? { id: day.date + ':episode:' + hash(ts + ':' + episode.id), kind: 'curiosity_note', mode: 'virtual_episode',
+          animationName: episode.id, wish: episode.wish, resultText: '我' + episode.label, source: 'living-motive', affinity: episode.affinity } :
+          { id: day.date + ':runtime-rest:' + ts, kind: 'quiet_rest', wish: '想安静歇一会儿', source: 'needs' }
+      }
+      activity = copy(activity)
+      const mem = chooseMemory(activity, input.memories, state), turn = state.turns.filter(t => dayOf(t.ts) === day.date).at(-1)
+      if (activity.kind === 'revisit_memory') {
+        if (!mem) return null
+        activity.sourceId = mem.id; activity.resultText = '我回想了这段记忆：' + clip(mem.content || mem.text, 160)
+        activity.refs = ['mem:' + mem.id]; activity.material = { id: mem.id, text: clip(mem.content || mem.text, 160), date: mem.date || dayOf(mem.createdAt || ts) }
+      } else if (activity.kind === 'chat_notes') {
+        if (!turn) return null
+        activity.resultText = '我把主人这句话记下来了：' + clip(turn.userText, 160)
+        activity.refs = [turn.messageRef]; activity.material = { id: turn.messageRef, text: clip(turn.userText, 160), date: dayOf(turn.ts) }
+      } else {
+        activity.resultText = activity.mode === 'virtual_episode' ? activity.resultText : activity.kind === 'quiet_rest' ? '我留了一段时间安静歇着' : '我记下了一个好奇的问题：' + activity.wish
+        activity.refs = [activity.id]
+      }
+      return { revision: committed.revision, activity }
+    }
+    function startActivity(proposal, input, execution) {
+      if (!runtimeOwned() || !deps.authorize || !deps.authorize(execution)) return Promise.resolve({ ok: false, reason: 'runtime_authorization_required' })
+      return mutate(state => {
+        if (!deps.authorize(execution)) return { unchanged: true, ok: false, reason: 'runtime_cancelled' }
+        if (!proposal || proposal.revision !== committed.revision) return { unchanged: true, ok: false, reason: 'stale_life_proposal' }
+        const day = makeDay(state, input.nowTs)
+        if (day.activities.some(a => a.status === 'active')) return { unchanged: true, ok: false, reason: 'activity_active' }
+        const proposed = copy(proposal.activity), existing = day.activities.find(a => a.id === proposed.id)
+        const active = existing ? Object.assign(existing, proposed) : insertActivity(day, proposed)
+        if (!active) return { unchanged: true, ok: false, reason: 'activity_capacity' }
+        Object.assign(active, { status: 'active', startedAt: input.nowTs, lastAttemptAt: input.nowTs, elapsedMs: Number(active.elapsedMs) || 0,
+          runtimeExecutionId: execution.executionId, runtimeContinuation: execution.continueAs('life:' + active.id) })
+        delete active.pauseReason
+        return { ok: true, activityId: active.id, continuationId: active.runtimeContinuation }
+      })
+    }
+    function commitRuntimePolicy(policy, execution) {
+      return mutate(state => {
+        if (!runtimeOwned() || !deps.authorize || !deps.authorize(execution)) return { unchanged: true, ok: false, reason: 'runtime_authorization_required' }
+        state.quietUntil = Math.max(0, Number(policy.quietUntil) || 0)
+        state.conversationPolicy = { speechAct: 'answer', explicitClosing: !!policy.explicitClosing, updatedAt: policy.now, sourceRef: execution.executionId }
+        return { ok: true }
+      })
+    }
     function context(ts, diaryDay, memoryView) {
       const day = committed.days.find(d => d.date === (diaryDay || dayOf(ts)))
       const memories = memoryView || (current && current.memories) || []
@@ -440,7 +567,7 @@
       const activities = day ? copy(day.activities).filter(a => !excluded(a, memories)).map(a => ({
         id: a.id, kind: a.kind, wish: a.wish, status: a.status, pauseReason: a.pauseReason || null,
         startedAt: a.startedAt || null, finishedAt: a.finishedAt || null, material: a.material || null,
-        mode: a.mode || null, animationName: a.animationName || null, refs: a.refs || [],
+        mode: a.mode || null, animationName: a.animationName || null, refs: a.refs || [], runtimeContinuation: a.runtimeContinuation || null, runtimeExecutionId: a.runtimeExecutionId || null,
         retryAt: a.retryAt || 0, retryCount: a.retryCount || 0, abandoned: !!a.abandoned
       })) : []
       const activeActivity = current && (current.visible === false || current.hidden === true) ? null : activities.find(a => a.status === 'active') || null
@@ -459,7 +586,7 @@
     }
     function candidates(input) {
       const i = input || {}, ts = Number(i.nowTs), out = [], seen = new Set()
-      if (committed.quietUntil > ts) return []
+      if (!runtimeOwned() && committed.quietUntil > ts) return []
       const push = row => {
         if (!row.text || seen.has(row.id) || excluded(row, i.allMemories || i.memories)) return
         // A routine movement or rest is valid life, but has no new conversational event on its own.
@@ -485,7 +612,7 @@
         id: 'self:' + a.id + ':' + a.status, source: 'self_activity', text: a.wish + '；状态：' + a.status + (a.pauseReason ? '；' + a.pauseReason : ''),
         date: life.date, kind: a.kind, animationName: a.animationName, originTs: a.startedAt, confidence: 1, forms: a.kind === 'quiet_rest' ? ['share', 'accompany'] : ['share', 'question', 'invite'], material: a.material || null
       }))
-      life.experiences.filter(e => e.proactiveEligible !== false).slice(-3).forEach(e => push({ id: e.id, source: 'self_experience', text: e.text, date: e.day, originTs: e.ts, confidence: 1, forms: ['share', 'question'], refs: e.refs, animationName: e.animationName }))
+      life.experiences.filter(e => e.proactiveEligible !== false).slice(-3).forEach(e => push({ id: e.id, source: e.actor === 'owner' || e.sourceType === 'game.completed' ? 'observed_owner_event' : 'self_experience', text: e.text, date: e.day, originTs: e.ts, confidence: 1, forms: ['share', 'question'], refs: e.refs, animationName: e.animationName, actor: e.actor || (e.sourceType === 'game.completed' ? 'owner' : 'character'), observer: e.observer || 'character', subject: e.subject, world: e.world || 'virtual', sourceType: e.sourceType }))
       life.threads.filter(t => !(t.deferUntil > ts)).slice(-3).forEach(t => push({ id: t.id, source: 'unfinished_conversation', text: '主人说过：' + t.quote, date: dayOf(t.ts), confidence: 1, forms: ['question', 'share'], messageRef: t.messageRef }))
       rankedMemories(i.memories, committed).forEach(m => push({ id: 'memory:' + m.id, source: 'memory',
         text: String(m.content || m.text), date: m.date || (m.createdAt ? dayOf(m.createdAt) : null), originTs: m.createdAt, confidence: Number(m.confidence) || 0.7,
@@ -503,10 +630,20 @@
       ;(Array.isArray(i.events) ? i.events : []).filter(e => /milestone|achievement|task_complete|work_completed/.test(String(e.kind || e.type || '')) && e.ts && ts >= e.ts && ts - e.ts < 60 * MINUTE).slice(-2).forEach(e => push({
         id: 'event:' + (e.id || hash(e.ts + ':' + e.text)), source: 'event', text: clip(e.text || e.description, 160), date: dayOf(e.ts), originTs: e.ts, confidence: 1, forms: ['celebrate', 'share']
       }))
-      life.artifacts.forEach(a => push({ id: a.id, source: 'self_experience', text: a.text, date: dayOf(a.createdAt), originTs: a.createdAt,
-        confidence: 1, kind: a.kind, animationName: a.animationName, material: a.material || null, refs: a.sourceRefs || [], forms: ['share', 'question'] }))
+      life.artifacts.forEach(a => push({ id: a.id, source: a.actor === 'owner' || a.sourceType === 'game.completed' ? 'observed_owner_event' : 'self_experience', text: a.text, date: dayOf(a.createdAt), originTs: a.createdAt,
+        confidence: 1, kind: a.kind, animationName: a.animationName, material: a.material || null, refs: a.sourceRefs || [], forms: ['share', 'question'], actor: a.actor || (a.sourceType === 'game.completed' ? 'owner' : 'character'), observer: a.observer || 'character', subject: a.subject, world: a.world || 'virtual', sourceType: a.sourceType }))
+      // Relationship opportunity is supported by actual interaction cadence; it is not an invented episode.
+      const lastOwner = Math.max(0, ...life.conversations.map(row => Number(row.ts) || 0), ...(i.history || []).filter(row => row.role === 'user').map(row => Number(row.ts) || 0))
+      const lastContact = committed.contacts.at(-1)
+      if (lastOwner > 0 && ts - lastOwner >= 4 * 60 * MINUTE && (!lastContact || lastContact.repliedAt || lastContact.ts < lastOwner)) push({
+        id: 'social:' + lastOwner, source: 'interaction_cadence', kind: 'social_contact',
+        text: '已有真实互动，当前交流已结束，可以选择轻松闲聊，也可以继续安静等待。没有新的经历可供声称。',
+        date: dayOf(lastOwner), originTs: lastOwner, confidence: 1, forms: ['question', 'share'],
+        actor: 'character', observer: 'system', subject: 'relationship', world: 'system',
+        opportunity: { reason: 'relationship_reconnect', lastOwnerAt: lastOwner }, evidenceRefs: [],
+      })
       // Admission and cooldown happen before budgets; a cooling recent item cannot hide unused material.
-      const rank = row => (row.fresh ? 100 : 0) + ({ event: 35, unfinished_conversation: 25, owner_words: 20, self_experience: 18, self_activity: 12, memory: 8, environment: 0 })[row.source]
+      const rank = row => (row.fresh ? 100 : 0) + (({ event: 35, unfinished_conversation: 25, owner_words: 20, self_experience: 18, observed_owner_event: 18, interaction_cadence: 10, self_activity: 12, memory: 8, environment: 0 })[row.source] || 0)
       out.sort((a, b) => rank(b) - rank(a) || (Number(b.originTs) || 0) - (Number(a.originTs) || 0) || a.id.localeCompare(b.id))
       const selected = [], bySource = new Map()
       for (const row of out) {
@@ -521,16 +658,46 @@
       const i = input || {}, ts = Number(i.ts), ref = clip(i.messageRef, 120)
       if (!(ts > 0) || !ref || !i.userText) throw Error('life_turn_missing_evidence')
       const verified = verifiedMemory(i.memory, i.userText, ref, ts)
-      const recorded = await mutate(state => {
+      const factWrite = runtimeOwned() && i.metadataOnly
+      const sourceGuard = factWrite ? { messageRef: ref, ts, text: String(i.userText) } : null
+      const factAllowed = () => deps.authorizeFacts && deps.authorizeFacts(i.runtimeFactExecution, ref)
+      if (factWrite && !factAllowed()) return { ok: false, reason: 'runtime_cancelled' }
+      const durable = factWrite && typeof deps.factBegin === 'function'
+      if (durable) {
+        const began = await deps.factBegin({ messageRef: ref, ts, userText: String(i.userText), memory: i.memory || null,
+          conversation: i.conversation || null, replyTo: i.replyTo || null, eligibleMemory: !!verified })
+        if (began && began.ok === false) return began
+      }
+      const recorded = await mutate(async state => {
+        if (runtimeOwned() && (factWrite ? !factAllowed() : !deps.authorize || !deps.authorize(i.runtimeExecution))) return { unchanged: true, ok: false, reason: 'runtime_cancelled' }
+        if (factWrite) {
+          const source = deps.loadSource && await deps.loadSource(ref)
+          if (!source || source.role !== 'user' || source.ts !== ts || source.text !== String(i.userText) ||
+            i.runtimeFactExecution.sourceTs !== ts || !factAllowed()) return { unchanged: true, ok: false, reason: 'history_source_invalid' }
+          const memories = deps.memories ? deps.memories() : []
+          const archivedSource = memories.some(m => m.status === 'archived' && (m.evidenceRefs || []).some(e => e && e.messageRef === ref))
+          if (archivedSource || excluded({ messageRef: ref, userText: i.userText }, memories) || state.ignoredSourceKeys.includes(ref) ||
+            state.ignoredSourceKeys.includes('conversation:' + ref)) return { unchanged: true, ok: false, reason: 'source_forgotten' }
+        }
         const priorTurn = state.turns.find(t => t.messageRef === ref)
         if (i.metadataOnly) {
-          if (!priorTurn || priorTurn.userText !== clip(i.userText, 800) || priorTurn.metadataApplied) return { unchanged: true }
-          priorTurn.memory = verified ? { quote: verified.quote, kind: verified.kind, label: verified.label } : null
-          priorTurn.metadataApplied = true
-        } else if (priorTurn) return { unchanged: true }
+          if (priorTurn && (priorTurn.userText !== clip(i.userText, 800) || priorTurn.metadataApplied)) return { unchanged: true }
+          if (!priorTurn && !factWrite) return { unchanged: true }
+          if (priorTurn) {
+            priorTurn.memory = verified ? { quote: verified.quote, kind: verified.kind, label: verified.label } : null
+            priorTurn.metadataApplied = true
+          }
+        } else if (priorTurn) {
+          if (priorTurn.userText !== clip(i.userText, 800) || priorTurn.assistantText || !i.assistantText) return { unchanged: true }
+          priorTurn.assistantText = clip(i.assistantText, 800)
+          const contact = i.replyTo && state.contacts.find(c => c.instanceId === i.replyTo)
+          if (contact) contact.repliedAt = ts
+          return { ok: true }
+        }
         const metadata = i.conversation || i.metadata || i.conversationPolicy || {}
         if (!i.metadataOnly) {
           // Fresh owner input releases an old pause; a newly explicit finite pause may replace it.
+          if (!runtimeOwned()) {
           state.quietUntil = 0
           if (Number.isFinite(metadata.quietUntil) && metadata.quietUntil > ts &&
             /先别|不要[^。！？]{0,12}(主动|找|打扰)|别[^。！？]{0,10}(找|打扰)|稍后|晚点|过会|等我|再聊|分钟|小时/.test(i.userText)) {
@@ -540,16 +707,21 @@
             speechAct: ['answer', 'acknowledge', 'clarify', 'continue', 'share', 'invite', 'playful', 'comfort', 'close'].includes(metadata.speechAct) ? metadata.speechAct : 'answer',
             explicitClosing: !!metadata.explicitClosing, updatedAt: ts, sourceRef: ref
           }
-          state.turns.push({ messageRef: ref, ts, userText: clip(i.userText, 800), assistantText: clip(i.assistantText, 800),
-            memory: verified ? { quote: verified.quote, kind: verified.kind, label: verified.label } : null })
-          state.turns = state.turns.slice(-160)
+          }
+          if (!runtimeOwned()) {
           state.quietDecisions = 0
           state.nextDecisionAt = Math.min(Number(state.nextDecisionAt) || ts + 10 * MINUTE, ts + 10 * MINUTE)
+          }
           const contact = i.replyTo && state.contacts.find(c => c.instanceId === i.replyTo)
           if (contact) contact.repliedAt = ts
         }
+        if (!priorTurn) {
+          state.turns.push({ messageRef: ref, ts, userText: clip(i.userText, 800), assistantText: i.metadataOnly ? '' : clip(i.assistantText, 800),
+            memory: verified ? { quote: verified.quote, kind: verified.kind, label: verified.label } : null, metadataApplied: !!i.metadataOnly })
+          state.turns = state.turns.sort((a, b) => a.ts - b.ts).slice(-160)
+        }
         const contact = i.replyTo && state.contacts.find(c => c.instanceId === i.replyTo)
-        if (i.metadataOnly && state.conversationPolicy.sourceRef === ref) {
+        if (!runtimeOwned() && i.metadataOnly && state.conversationPolicy && state.conversationPolicy.sourceRef === ref) {
           state.conversationPolicy.speechAct = metadata.speechAct || state.conversationPolicy.speechAct
         }
         const laterResolution = verified && state.turns.some(t => t.ts > ts && threadOverlap(verified.quote, t.userText) > 0 &&
@@ -605,16 +777,36 @@
           text: clip(i.userText, 240), evidenceQuote: clip(i.userText, 240), createdAt: ts, sourceRefs: [ref], refs: [ref],
           material: { id: ref, text: clip(i.userText, 240), date: dayOf(ts) }
         })
-        if (!i.metadataOnly) {
+        if (!priorTurn) {
           const day = makeDay(state, ts)
           experience(day, 'conversation', '主人跟我说：' + clip(i.userText, 160), ts, [ref])
         }
-      })
-      if (verified && !(recorded && recorded.unchanged) && typeof deps.remember === 'function') {
-        const r = deps.remember(verified.candidate)
-        if (r && r.ok === false) lastError = 'memory:' + String(r.reason || 'rejected')
+      }, sourceGuard, factWrite ? factAllowed : null)
+      if (recorded && recorded.ok === false) return recorded
+      async function advance(step, detail) {
+        if (!durable || !deps.factAdvance) return
+        const result = await deps.factAdvance(ref, step, detail)
+        if (result && result.ok === false) throw Error(result.reason || 'fact_checkpoint_failed')
       }
-      return { ok: true, memoryAccepted: !!verified }
+      await advance('lifeApplied')
+      let memoryAccepted = false
+      if (verified && (durable || !(recorded && recorded.unchanged)) && (!runtimeOwned() || (factWrite ? factAllowed() : deps.authorize(i.runtimeExecution))) && typeof deps.remember === 'function') {
+        const r = durable && deps.hasMemoryEvidence && deps.hasMemoryEvidence(verified.candidate) ? { ok: true, alreadyApplied: true } : deps.remember(verified.candidate)
+        memoryAccepted = !!(r && (r.ok || r.reason === 'duplicate_event'))
+        if (r && r.ok === false && !memoryAccepted) {
+          lastError = 'memory:' + String(r.reason || 'rejected')
+          await advance('memoryRejected', { reason: lastError })
+          return { ok: false, reason: lastError, lifeCommitted: true, memoryAccepted: false }
+        }
+      }
+      if (durable) {
+        if (verified && !memoryAccepted) return { ok: false, reason: 'memory_pending_authorization', lifeCommitted: true }
+        await advance('memoryAccepted')
+        const flushed = deps.flushMemory ? await deps.flushMemory() : { ok: !verified }
+        if (!flushed || !flushed.ok) return { ok: false, reason: flushed && flushed.reason || 'memory_persist_failed', lifeCommitted: true, memoryAccepted }
+        await advance('memoryPersisted')
+      }
+      return { ok: true, unchanged: !!(recorded && recorded.unchanged), memoryAccepted }
     }
     function recordEvent(input) {
       const i = input || {}, ts = Number(i.ts), eventId = clip(i.eventId, 180)
@@ -630,25 +822,33 @@
         const refs = ['event:' + eventId]
         let text, title, kind
         if (i.type === 'animation.completed') {
-          const active = day.activities.find(a => a.status === 'active' && a.mode === 'virtual_episode' && a.animationName === i.animation && a.startedAt <= ts)
+          const permit = deps.continuation && deps.continuation(i.continuationId)
+          if (runtimeOwned() && (!permit || permit.executionId !== i.executionId)) return { unchanged: true, ok: false, reason: 'runtime_authorization_required' }
+          const active = day.activities.find(a => a.status === 'active' && a.mode === 'virtual_episode' && a.animationName === i.animation && a.startedAt <= ts && (!runtimeOwned() || a.runtimeExecutionId === i.executionId))
           text = '我' + action.label; title = action.wish.replace(/^想/, ''); kind = 'virtual_episode'
           if (active) { active.status = 'done'; active.finishedAt = ts; active.completionEventId = eventId; refs.push(active.id) }
         } else if (i.type === 'game.completed') {
-          text = '桌宠里的' + gameLabels[i.game.gameId] + '游戏结束了'
+          text = '主人在桌宠程序里玩了' + gameLabels[i.game.gameId] + '，这一局结束了'
           if (Number.isFinite(i.game.score) && Math.abs(i.game.score) <= 1000000) text += '，这局得分 ' + i.game.score
           title = gameLabels[i.game.gameId] + '的一局'; kind = 'shared_game'
         } else { text = clip(i.text, 200); title = '一项桌宠工作'; kind = 'shared_work' }
         const virtualNotes = state.artifacts.filter(a => a.kind === 'virtual_episode')
         const latest = virtualNotes.at(-1), same = action && virtualNotes.filter(a => a.animationName === action.id).at(-1)
         const notable = !action || ((!latest || ts - latest.createdAt >= 10 * MINUTE) && (!same || ts - same.createdAt >= 60 * MINUTE))
+        const semantics = { actor: i.type === 'game.completed' ? 'owner' : 'character', observer: 'character', subject: i.type === 'game.completed' ? 'owner' : 'character', world: 'virtual', sourceType: i.type }
         const artifact = notable ? addArtifact(state, { id: 'event-artifact:' + hash(eventId), kind, title, text, createdAt: ts, sourceRefs: refs, refs,
-          animationName: action ? action.id : null, sourceType: i.type, evidenceEventId: eventId }) : null
-        experience(day, 'completed', text, ts, refs, { sourceType: i.type, animationName: action ? action.id : null, proactiveEligible: notable })
+          animationName: action ? action.id : null, ...semantics, evidenceEventId: eventId }) : null
+        if (artifact) Object.assign(artifact, semantics)
+        experience(day, 'completed', text, ts, refs, { ...semantics, animationName: action ? action.id : null, proactiveEligible: notable })
         state.eventIds.push(eventId); state.eventIds = state.eventIds.slice(-240)
         return { ok: true, artifactId: artifact && artifact.id || null }
       })
     }
     function forgetArtifact(id) {
+      const artifact = committed.artifacts.find(a => a.id === id)
+      if (artifact && artifact.status === 'active' && deps.invalidateFacts) {
+        for (const ref of artifact.sourceRefs || artifact.refs || []) deps.invalidateFacts(ref)
+      }
       return mutate(state => {
         const artifact = state.artifacts.find(a => a.id === id)
         if (!artifact || artifact.status !== 'active') return { unchanged: true, ok: false, reason: 'artifact_not_found' }
@@ -661,10 +861,21 @@
       const memories = memoryView || current && current.memories || []
       return copy(committed.artifacts.filter(a => a.status === 'active' && !excluded(a, memories)))
     }
+    function invalidateSources(refs) {
+      const set = new Set(refs)
+      return mutate(state => {
+        const linked = row => set.has(row.messageRef) || (row.sourceRefs || row.refs || []).some(r => set.has(r)) || row.material && set.has(row.material.id)
+        for (const key of ['turns', 'threads', 'artifacts', 'interests']) state[key] = state[key].filter(row => !linked(row))
+        for (const day of state.days) { day.activities = day.activities.filter(row => !linked(row)); day.experiences = day.experiences.filter(row => !linked(row)) }
+        state.ignoredSourceKeys = [...new Set(state.ignoredSourceKeys.concat(refs))].slice(-240)
+        return { ok: true }
+      })
+    }
     function presented(input) {
       const i = input || {}
       if (!i.candidateId || !i.instanceId || !(i.ts > 0)) return Promise.resolve({ unchanged: true })
       return mutate(state => {
+        if (runtimeOwned() && (!deps.authorize || !deps.authorize(i.runtimeExecution))) return { unchanged: true, ok: false, reason: 'runtime_authorization_required' }
         if (state.contacts.some(c => c.instanceId === i.instanceId)) return { unchanged: true }
         state.contacts.push({ candidateId: clip(i.candidateId, 180), instanceId: clip(i.instanceId, 120), ts: i.ts,
           topic: clip(i.topic, 60), opening: clip(i.opening, 100), form: clip(i.form, 20), repliedAt: null,
@@ -675,6 +886,7 @@
     async function flush() { await queue; return { ok: !lastError, error: lastError } }
     function canPlan(ts) { return ready && ts >= Math.max(Number(committed.nextDecisionAt) || 0, Number(committed.quietUntil) || 0) }
     function reserveDecision(ts) {
+      if (runtimeOwned()) return Promise.resolve({ ok: false, unchanged: true, reason: "runtime_owned" })
       return mutate(state => {
         if (ts < Math.max(Number(state.nextDecisionAt) || 0, Number(state.quietUntil) || 0)) return { unchanged: true, ok: false }
         state.nextDecisionAt = ts + 10 * MINUTE
@@ -682,16 +894,17 @@
       })
     }
     function decisionFeedback(input) {
+      if (runtimeOwned()) return Promise.resolve({ ok: false, unchanged: true, reason: "runtime_owned" })
       return mutate(state => {
         state.quietDecisions = input.quiet ? Math.min(3, (Number(state.quietDecisions) || 0) + 1) : 0
         if (input.quiet) state.nextDecisionAt = input.nowTs + 15 * MINUTE * Math.pow(2, state.quietDecisions)
       })
     }
     function canPresentDecision(decision, ts) {
-      return committed.quietUntil <= ts && !(decision.sourceKeys || []).some(k => committed.ignoredSourceKeys.includes(k)) &&
+      return (runtimeOwned() || committed.quietUntil <= ts) && !(decision.sourceKeys || []).some(k => committed.ignoredSourceKeys.includes(k)) &&
         !repeatReason(decision.sourceKeys || [], !!decision.fresh, committed, ts)
     }
-    return { init, tick, setVisibility, context, candidates, recordTurn, recordEvent, forgetArtifact, getArtifacts, presented, flush, snapshot, canPlan, reserveDecision, decisionFeedback, canPresentDecision }
+    return { init, tick, proposeActivity, startActivity, commitRuntimePolicy, setVisibility, context, candidates, recordTurn, recordEvent, forgetArtifact, getArtifacts, invalidateSources, presented, flush, snapshot, canPlan, reserveDecision, decisionFeedback, canPresentDecision }
   }
   function validateDecision(raw, candidates, action) {
     if (!raw || typeof raw !== 'object') return { ok: false, reason: 'invalid_decision' }

@@ -19,12 +19,13 @@ function createStore(directory) {
     }
     return { ok: true, state: JSON.parse(JSON.stringify(state)) }
   }
-  function save(next) {
+  function save(next, validateSource) {
     const job = queue.then(async () => {
       if (!validState(next)) return { ok: false, error: 'life_invalid_state' }
       const loaded = await load()
       if (!loaded.ok) return loaded
       if (next.revision !== state.revision + 1) return { ok: false, error: 'life_revision_conflict' }
+      if (validateSource && !validateSource()) return { ok: false, error: 'life_source_invalid' }
       const text = JSON.stringify(next, null, 2)
       try {
         await fs.mkdir(directory, { recursive: true })

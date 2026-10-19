@@ -9,9 +9,11 @@ window.GameBridge = (function () {
     const eventId = p.eventId || ('game:' + gameId + ':' + (Date.now()) + ':' + (p.score || 0))
     if (window.EventBus) {
       window.EventBus.emitOnce('game.completed', {
+        eventId,
         gameId,
         score: Number(p.score) || 0,
         won: !!p.won,
+        draw: p.draw === true, level: p.level, elapsedSeconds: p.elapsedSeconds,
         ts: Date.now()
       }, eventId)
     }

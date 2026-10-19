@@ -21,6 +21,7 @@ window.AnimationPlayer = (function () {
     const once = !!options.once
     const onEnded = typeof options.onEnded === 'function' ? options.onEnded : null
     const onError = typeof options.onError === 'function' ? options.onError : null
+    const onStarted = typeof options.onStarted === 'function' ? options.onStarted : null
 
     clearCurrent()
     if (!video) return false
@@ -30,9 +31,12 @@ window.AnimationPlayer = (function () {
     video.playsInline = true
     try { if (video.ended || video.currentTime > 0) video.currentTime = 0 } catch (err) { /* ignore */ }
 
-    const run = { name, video, once, onEnded, onError, suspended: false }
+    const run = { name, video, once, onEnded, onError, suspended: false, started: false }
     current = run
     const handleEnded = () => {
+      // A queued ended event from the previous run of the same element must
+      // not complete a newly rewound run.
+      if (video.ended === false) return
       const active = current === run
       if (active) {
         current = null
@@ -53,16 +57,22 @@ window.AnimationPlayer = (function () {
     video.onerror = handleError
 
     run.fail = handleError
+    const started = () => {
+      if (current !== run || run.suspended || run.started) return
+      run.started = true
+      if (onStarted) onStarted()
+    }
     try {
       const p = video.play()
-      if (p && typeof p.catch === 'function') p.catch(() => {
+      if (p && typeof p.then === 'function') p.then(started).catch(() => {
         if (current !== run || run.suspended) return
         try {
           video.muted = true
           const p2 = video.play()
-          if (p2 && typeof p2.catch === 'function') p2.catch(handleError)
+          if (p2 && typeof p2.then === 'function') p2.then(started).catch(handleError)
         } catch (err) { handleError() }
       })
+      else if (!video.paused) started()
     } catch (err) { handleError(); return false }
     return true
   }

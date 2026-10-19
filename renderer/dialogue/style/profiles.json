@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "version": "0.1",
+  "profiles": {
+    "reply_v01": {
+      "stage": "M1_reply",
+      "promptId": "style.reply.v01",
+      "rules": ["ESL-001", "ESL-002", "ESL-003", "ESL-004", "ESL-005", "ESL-006", "ESL-007"]
+    },
+    "proactive_v01": {
+      "stage": "M2_say",
+      "promptId": "style.proactive.v01",
+      "rules": ["ESL-001", "ESL-002", "ESL-003", "ESL-004", "ESL-005", "ESL-006", "ESL-007"]
+    }
+  }
+}

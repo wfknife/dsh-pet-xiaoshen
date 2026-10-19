@@ -17,6 +17,7 @@ window.Scheduler = (function () {
 
   function every(owner, ms, fn) {
     cancel(owner)
+    if (window.pet?.character?.authority && ['needs', 'diary2'].includes(owner)) return null
     const id = setInterval(() => {
       if (typeof fn === 'function') fn()
     }, ms)

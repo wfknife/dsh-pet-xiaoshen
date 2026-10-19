@@ -483,6 +483,10 @@ window.AIGateway = (function () {
     const userText = String(p.userText || p.user || p.prompt || '')
     let history = Array.isArray(p.history) ? pairAwareHistoryWindow(p.history, 20) : []
     let system = String(p.system || '').trim()
+    if (p.projectionTrace) {
+      // Source IDs and exclusion reasons only. No private prompt/content copy.
+      window.LastContextProjection = p.projectionTrace
+    }
     if (p.historyMetadata && history.length) {
       let priorUser = ''
       history = history.map(h => {
@@ -491,7 +495,7 @@ window.AIGateway = (function () {
       })
       const metadata = history.map((h, index) => ({ index: index + 1, role: h.role, messageRef: h.messageRef || null,
         at: Number.isFinite(Number(h.ts)) && Number(h.ts) > 0 ? new Date(Number(h.ts)).toISOString() : null,
-        selfInitiated: h.selfInitiated === true }))
+        selfInitiated: h.selfInitiated === true, sourcePermission: h.sourcePermission || 'saved_original' }))
       system += '\n【历史消息元数据】编号对应随后历史消息的顺序；at 是实际发送时间（ISO 8601），正文另列。\n' + JSON.stringify(metadata)
     }
     if (!userText && !Array.isArray(p.messages)) return { ok: false, reason: 'no_user_message', text: null }
@@ -508,15 +512,16 @@ window.AIGateway = (function () {
        **一次**重试，仅针对 `empty`（provider 层错误照旧不重试：重试不会让 401/429/超时变好）。 */
     let r = await callOnce()
     let retryAfterEmpty = false
-    if (r && r.ok === false && r.error === 'empty') {
+    if (r && r.ok === false && r.error === 'empty' && !(r.completion && ['length', 'max_tokens'].includes(r.completion.finishReason))) {
       retryAfterEmpty = true
       r = await callOnce()
     }
     if (!r || !r.ok) {
       failures++
-      return { ok: false, reason: r && r.error ? r.error : 'provider_failed', text: null, failureStage: 'provider', retryAfterEmpty, ...providerMetadata(r) }
+      return { ok: false, reason: r && r.completion && ['length', 'max_tokens'].includes(r.completion.finishReason) ? 'provider_truncated' : r && r.error ? r.error : 'provider_failed', text: null, failureStage: 'provider', retryAfterEmpty, ...providerMetadata(r) }
     }
     const text = String(r.text || '').trim()
+    if (r.completion && ['length', 'max_tokens'].includes(r.completion.finishReason)) return { ok: false, reason: 'provider_truncated', text: null, rawText: text, ...providerMetadata(r) }
     if (!text) { failures++; return { ok: false, reason: 'empty', text: null, failureStage: 'provider_content', ...providerMetadata(r) } }
     if (isDeceptiveIdentityText(text)) { failures++; return { ok: false, reason: 'persona_boundary', text: null } }
     return { ok: true, text, source: 'character-direct', retryAfterEmpty, ...providerMetadata(r) }
@@ -555,6 +560,7 @@ window.AIGateway = (function () {
   }
   function withLifeEvidence(context, life) {
     const c = Object.assign({}, context || {})
+    life = life || c.petLife
     const words = life && Array.isArray(life.conversations) ? life.conversations.map(t => ({ id: t.messageRef, date: normalizeLocalDay(t.ts), content: t.userText })) : []
     c.relevantMemories = (c.relevantMemories || []).concat(words)
     return c

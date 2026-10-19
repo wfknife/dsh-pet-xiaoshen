@@ -2,6 +2,221 @@
 (function () {
   'use strict'
   const $ = (id) => document.getElementById(id)
+  const runtimeBubblePermits = new Map()
+  let currentAnimationOwner = null
+  const roleRuntime = window.CharacterRuntime.create({ decide: decideCharacterEvent,
+    onChange: record => {
+      if (platformBridge && record.phase === 'completed' && record.automatic && record.ok && !record.silent) void platformBridge.presented(record.inputId).catch(e => console.warn('[platform] budget save:', e.message))
+    },
+    presentation: { claim: plan => presentationPlans ? presentationPlans.claim(plan) : null, stage: (token, phase) => presentationPlans && presentationPlans.stage(token, phase),
+      setVisible: value => presentationPlans && presentationPlans.setVisible(value) }, initialState: async () => {
+    await window.PetLife.init()
+    const state = window.PetLife.snapshot().state
+    const saved = window.pet.platform ? await window.pet.platform.info() : null
+    if (saved && !saved.ok) throw Error(saved.reason || 'platform_restore_failed')
+    return { quietUntil: state.quietUntil, lastAutomatic: Math.max(0, saved && saved.policy && saved.policy.lastAutomatic || 0, ...state.contacts.map(c => Number(c.ts) || 0)) }
+  } })
+  window.RoleRuntime = roleRuntime
+  const platformBridge = window.pet.platform
+  if (platformBridge && platformBridge.onInvalidated) platformBridge.onInvalidated(data => {
+    const received = new Set(data && data.refs || []), refs = new Set(received)
+    for (const memory of window.MemoryEngine.getMemories()) if ((memory.evidenceRefs || []).some(e => refs.has(e.messageRef))) { refs.add(memory.id); refs.add('mem:' + memory.id) }
+    const derived = [...refs].filter(ref => !received.has(ref))
+    for (let index = 0; index < derived.length; index += 240) void platformBridge.forget(derived.slice(index, index + 240)).catch(e => console.warn('[platform] lineage delete:', e.message))
+    roleRuntime.invalidateFacts('source_forgotten', ref => refs.has(ref))
+    roleRuntime.cancel('source_forgotten', event => event.origin === 'automatic' || refs.has(event.messageRef))
+    if (characterRetryTurn && refs.has(characterRetryTurn.messageRef)) characterRetryTurn = null
+    window.PlatformContext = null
+    if (window.PetLife.invalidateSources) void window.PetLife.invalidateSources([...refs]).catch(e => console.warn('[platform]', e.message))
+    if (window.MemoryEngine.invalidateSources) window.MemoryEngine.invalidateSources([...refs])
+  })
+  const presentationPlans = window.PresentationPlan ? window.PresentationPlan.create({ receipt: row => platformBridge && platformBridge.delivery && platformBridge.delivery(row) }) : null
+  const lifeCapabilities = platformBridge && window.CharacterCapabilities ? window.CharacterCapabilities.create({
+    store: platformBridge, authorize: (execution, effect) => effect === 'virtual' && roleRuntime.isAuthorized(execution)
+  }) : null
+  if (lifeCapabilities) lifeCapabilities.register({ id: 'life.virtual-activity', provider: 'builtin.pet-life', version: '1', effect: 'virtual', timeoutMs: 5000,
+    input: window.CharacterCapabilities.SCHEMAS.activityInput, output: window.CharacterCapabilities.SCHEMAS.activity, available: () => !!window.PetLife.snapshot().ready },
+    async (value, host, execution) => {
+      const result = await window.PetLife.startActivity(value.proposal, value.input, execution)
+      return result && result.ok ? { ok: true, awaitingReceipt: true, value: { ...result, virtual: true } } : result
+    })
+  async function recoverPlatformFacts() {
+    if (!platformBridge) return
+    const info = await platformBridge.info()
+    if (!info || !info.ok) throw Error(info && info.reason || 'platform_unavailable')
+    window.PlatformCandidate = { enabled: !!info.enabled }
+    const restored = await platformBridge.recover()
+    if (!restored || !restored.ok) throw Error(restored && restored.reason || 'operation_recovery_failed')
+    await window.PetLife.init()
+    if (window.MemoryEngine && window.MemoryEngine.init) await window.MemoryEngine.init()
+    const jobs = await platformBridge.pendingFacts()
+    if (!Array.isArray(jobs)) throw Error(jobs && jobs.reason || 'fact_recovery_failed')
+    for (const job of jobs) {
+      const source = await window.pet.characterHistorySource(job.sourceRefs[0])
+      if (!source || source.ts !== job.input.ts || source.text !== job.input.userText) continue
+      const permit = roleRuntime.restoreFacts(source, job.expiresAt)
+      if (!permit) continue
+      try {
+        const result = await window.PetLife.recordTurn({ ...job.input, metadataOnly: true, runtimeFactExecution: permit })
+        if (!result || !result.ok) console.warn('[platform] incomplete recovery:', result && result.reason)
+      } finally { roleRuntime.completeFacts(permit) }
+    }
+  }
+  // Wait for all renderer scripts and their storage initialization, without making a model call.
+  window.addEventListener('load', () => { void recoverPlatformFacts().catch(e => console.warn('[platform]', e.message)) })
+  if (lifeCapabilities) lifeCapabilities.register({ id: 'life.virtual-project', provider: 'builtin.virtual-notebook', version: '1', effect: 'virtual', timeoutMs: 5000,
+    output: window.CharacterCapabilities.SCHEMAS.project,
+    input: { type: 'object', required: ['projectId'], properties: { projectId: { type: 'string', maxLength: 140 } }, additionalProperties: false } },
+    async (input, host) => platformBridge.projectStep(input.projectId, host.operationId))
+  window.pet.onCharacterHistoryInvalidated(() => roleRuntime.invalidateFacts('history_cleared'))
+  window.addEventListener('beforeunload', () => roleRuntime.shutdown())
+  async function decideCharacterEvent(event, state, execution) {
+    if (event.origin === 'user') return { action: 'reply' }
+    if (event.origin === 'user-feedback') return { action: event.kind }
+    if (R.hidden || R.busy || chatBusy || charcBusy || pendingInter || Date.now() < state.quietUntil) return { action: 'wait', reason: 'not_available' }
+    if (event.origin !== 'system' && Date.now() - state.lastAutomatic < 10 * 60000) return { action: 'wait', reason: 'runtime_interval' }
+    if (event.kind !== 'opportunity') return { action: event.kind }
+    const focused = document.activeElement
+    const typing = focused && ['mini-chat-input', 'charc-input', 'chat-input'].includes(focused.id) && String(focused.value || '').trim()
+    if (typing || game && game.playing || bubbleEl.dataset.remind || bubbleEl.dataset.report || bubbleEl.dataset.inter) return { action: 'wait', reason: 'surface_busy' }
+    const input = runtimeLifeInput()
+    const flags = event.constraints || {}
+    const proactiveAllowed = !Pace.blocked() && flags.switchEnabled !== false && flags.quietHours !== true && flags.ownerBusy !== true && flags.politenessDefer !== true &&
+      flags.noCredit !== true && flags.intervalOk !== false && flags.familyRecent !== true
+    if (platformBridge && window.PlatformCandidate && window.PlatformCandidate.enabled) {
+      const projection = await platformBridge.projection()
+      execution.assertCurrent()
+      window.PlatformContext = projection
+      const proposals = []
+      for (const concern of projection.concerns || []) if (concern.nextCheckAt <= Date.now()) proposals.push({ id: concern.id, kind: 'concern', text: concern.quote,
+        topic: concern.key, sourceRefs: concern.sourceRefs, expiresAt: concern.expiresAt, priority: 2 })
+      for (const project of projection.projects || []) proposals.push({ id: project.id, kind: 'project', text: project.quote, sourceRefs: project.sourceRefs,
+        capabilityId: 'life.virtual-project', expiresAt: project.expiresAt, priority: 1, step: project.step })
+      proposals.push({ id: 'existing-life', kind: 'life', priority: 0, expiresAt: Date.now() + 30000 })
+      if (event.observation && event.observation.text) proposals.push({ id: 'observation', kind: 'life', text: event.observation.text, priority: 0, expiresAt: Date.now() + 30000 })
+      const chosen = await platformBridge.select(proposals, { busy: !proactiveAllowed, hidden: R.hidden, quietUntil: state.quietUntil,
+        capabilities: lifeCapabilities.available() })
+      execution.assertCurrent()
+      if (!chosen.selected) return { action: 'wait', reason: chosen.reason || 'no_opportunity' }
+      if (chosen.selected.kind === 'project') return { action: 'project-step', project: chosen.selected }
+      if (chosen.selected.kind === 'concern') event.concern = chosen.selected
+    }
+    if (proactiveOn && proactiveAllowed && window.PetLife && window.PetLife.snapshot().ready) {
+      const context = proactiveTopicContext(), full = window.CharacterSnapshot.toCharacterAIContext('')
+      Object.assign(context, { selfState: full.selfState, runtimeFacts: full.runtimeFacts, petLife: full.petLife })
+      if (window.PlatformCandidate && window.PlatformCandidate.enabled) context.recentInteractions = await window.pet.characterHistoryLoad()
+      if (window.PlatformContext) Object.assign(context, { platform: window.PlatformContext, capabilities: lifeCapabilities ? lifeCapabilities.available() : [] })
+      if (platformBridge && window.PlatformCandidate && window.PlatformCandidate.enabled) {
+        const catalog = await platformBridge.capabilities()
+        context.capabilities = [...new Map([...(context.capabilities || []), ...(catalog.capabilities || [])].map(c => [c.id, c])).values()]
+      }
+      let candidates = window.PetLife.candidates({ nowTs: Date.now(), memories: window.MemoryRetrieval ? window.MemoryRetrieval.retrieve({}, { limit: 8 }) : [],
+        allMemories: window.MemoryEngine ? window.MemoryEngine.getMemories() : [], history: chatHistoryCache, reality: context.reality, events: full.recentEvents })
+      const concernBindings = {}
+      if (platformBridge && window.PlatformCandidate && window.PlatformCandidate.enabled && candidates.length) {
+        for (const candidate of candidates) {
+          const concern = (window.PlatformContext.concerns || []).find(c => c.sourceRefs.includes(candidate.messageRef))
+          if (concern) concernBindings[candidate.id] = concern.id
+        }
+        const ranked = await platformBridge.select(candidates.map(c => ({ id: c.id, text: c.text, topic: c.text,
+          sourceRefs: c.sourceKeys || [], priority: concernBindings[c.id] ? 2 : c.fresh ? 1 : 0, expiresAt: Date.now() + 30000 })),
+          { busy: !proactiveAllowed, hidden: R.hidden, quietUntil: state.quietUntil, capabilities: context.capabilities || [] })
+        execution.assertCurrent()
+        window.LastOpportunitySelection = { ranked: ranked.ranked || [], excluded: ranked.excluded || [], reason: ranked.reason || null }
+        candidates = (ranked.ranked || []).map(row => candidates.find(c => c.id === row.id)).filter(Boolean)
+      }
+      const decision = await window.Gen2.proactiveDecide({ context, candidates, recentOpenings: proactiveOpeningLog.slice() }, execution)
+      execution.assertCurrent()
+      if (decision.ok && !decision.silent) return { action: 'express', decision, concernBindings }
+      if (!decision.ok) return { action: 'none', ok: false, reason: decision.reason }
+    }
+    const proposal = window.PetLife && window.PetLife.proposeActivity(input)
+    return proposal ? { action: 'start-life', input, proposal } : { action: 'wait', reason: 'no_opportunity' }
+  }
+  function runtimeLifeInput() {
+    const c = window.CharacterSnapshot.toCharacterAIContext('')
+    return { nowTs: Date.now(), selfState: c.selfState, emotion: c.emotion, persona: c.personaProjection,
+      busy: !!(R.busy || chatBusy || charcBusy || (game && game.playing)), visible: !R.hidden,
+      availableActions: R.hidden ? [] : Object.keys(window.LivingPresence.ACTIONS).filter(id => !!$('anim-' + id) && !failedAnimations.has(id)),
+      aiEnabled: false, memories: window.MemoryEngine ? window.MemoryEngine.getMemories() : [] }
+  }
+  function runtimeNotify(render, key, origin = 'automatic') {
+    return roleRuntime.submit({ kind: 'local-expression', origin, coalesceKey: key }, execution => {
+      return execution.publish(() => render(execution))
+    })
+  }
+  function runtimeOpportunity(observation) {
+    return roleRuntime.submit({ kind: 'opportunity', origin: 'automatic', coalesceKey: 'life-opportunity', observation, constraints: observation && observation.proactive && observation.proactive.suppressors }, async (execution, decision) => {
+      if (decision.action === 'project-step') {
+        const result = await execution.commit(() => lifeCapabilities.execute({ id: 'project-step:' + decision.project.id + ':' + decision.project.step,
+          capabilityId: 'life.virtual-project', effect: 'virtual', input: { projectId: decision.project.id }, sourceRefs: decision.project.sourceRefs,
+          deadline: Date.now() + 30000 }, execution))
+        if (result && result.ok) await platformBridge.presented(decision.project.id)
+        return result
+      }
+      if (decision.action === 'start-life') {
+        const result = await execution.commit(() => lifeCapabilities ? lifeCapabilities.execute({ id: 'activity:' + execution.executionId,
+          capabilityId: 'life.virtual-activity', effect: 'virtual', input: { proposal: decision.proposal, input: { nowTs: decision.input.nowTs } },
+          sourceRefs: decision.proposal.activity.refs || [], deadline: Date.now() + 30000 }, execution)
+          : window.PetLife.startActivity(decision.proposal, decision.input, execution))
+        if (!result || !result.ok) return result
+        execution.assertCurrent(); armIdleChain(); return result
+      }
+      const topic = await window.Gen2.proactiveSay(decision.decision, execution)
+      execution.assertCurrent()
+      if (!topic || !topic.ok || topic.silent) return topic
+      if (!window.PetLife.canPresentDecision(topic, Date.now())) return { ok: false, reason: 'topic_no_longer_available' }
+      const id = execution.executionId
+      const presented = await proactiveShowCard(topic.opening, id, execution)
+      if (!presented || !presented.ok) return presented || { ok: false, reason: 'presentation_failed' }
+      execution.assertCurrent()
+      Pace.onAssistant()
+      const contact = await execution.commit(() => window.PetLife.presented({ candidateId: topic.candidateId, instanceId: id, topic: topic.topic,
+        sourceKeys: topic.sourceKeys, opening: topic.opening, form: topic.form, ts: Date.now(), runtimeExecution: execution }))
+        .catch(error => ({ ok: false, reason: error.message }))
+      if (platformBridge && window.PlatformCandidate && window.PlatformCandidate.enabled) await platformBridge.presented(decision.concernBindings && decision.concernBindings[topic.candidateId] || topic.candidateId)
+      const chosenActionId = { share: 'comment_on_activity', question: 'seek_attention', invite: 'seek_attention', accompany: 'accompany_owner', celebrate: 'celebrate' }[topic.form]
+      const bookkeeping = await proactiveReport({ type: 'present', id, presented: true, nowTs: Date.now(), opening: topic.opening,
+        topic: topic.topic, topicSource: 'ai', decision: { outcome: 'act', chosenActionId },
+        suppressors: observation && observation.proactive && observation.proactive.suppressors || {} })
+      // Actual presentation remains an observed fact even if the later ledger write fails.
+      return { ok: true, displayed: 'card', bookkeepingOk: !!(contact && contact.ok !== false && bookkeeping && bookkeeping.ok),
+        contactReason: contact && contact.reason, ledgerReason: bookkeeping && bookkeeping.reason }
+    })
+  }
+  function submitOwnerReply(text, execute) {
+    if (!text) return Promise.resolve({ ok: false, reason: 'empty_input' })
+    if (presentationPlans) presentationPlans.cancel(null, 'owner_input')
+    const frame = window.ConversationPolicy.analyzeTurn({ userText: text, now: Date.now() })
+    roleRuntime.setQuietUntil(frame.quietUntil || 0)
+    const status = roleRuntime.snapshot()
+    const previous = !status.current && !status.queued.length && characterRetryTurn && characterRetryTurn.text === text && characterRetryTurn.userSaved
+      ? { ...characterRetryTurn } : null
+    const messageRef = previous && previous.messageRef || window.MemoryMessageRef.next()
+    // User input is an observed fact, independent of whether a reply is later cancelled.
+    const accepted = previous ? Promise.resolve({ ok: true }) : Promise.resolve(window.pet.characterHistoryAppend({ role: 'user', text, messageRef })).catch(error => ({ ok: false, error: error.message }))
+    latestCharacterTurnRef = messageRef
+    const inputId = previous ? messageRef + ':retry:' + window.MemoryMessageRef.next() : messageRef
+    return roleRuntime.submit({ kind: 'reply', origin: 'user', id: inputId, messageRef, text }, async execution => {
+      const inputSaved = await accepted
+      if (!inputSaved || !inputSaved.ok) return { ok: false, reason: 'history_write_failed' }
+      execution.assertCurrent()
+      characterRetryTurn = { text, userSaved: true, messageRef, executionId: execution.executionId, reply: previous && previous.reply || null }
+      refreshCharacterHistoryViews()
+      if (!previous) diaryEvent('chat', text, { source: 'char-chat' })
+      const saved = await execution.commit(() => window.PetLife.commitRuntimePolicy(frame, execution))
+      if (!saved || !saved.ok) return saved
+      execution.assertCurrent()
+      return execute(execution)
+    })
+  }
+  function systemNotice(text, ms) {
+    const toast = $('panel-toast')
+    toast.textContent = String(text); toast.classList.remove('hidden')
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => toast.classList.add('hidden'), ms || 6000)
+    return { ok: true, displayed: 'system' }
+  }
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b)
   let uid = 0
@@ -26,64 +241,14 @@
     { key: 'fun', name: '🎲 娱乐', icon: '🎲' },
   ]
   // 道具：category 分类；effect 里 affection = 加好感度（礼物类专属，定价远高于普通道具）
-  const ITEMS = {
-    // ---- 餐点 ----
-    cookie: { name: '小饼干', icon: '🍪', desc: '饱食度 +20', price: 10, effect: { satiety: 20 }, category: 'meal' },
-    rice: { name: '女仆手作饭团', icon: '🍙', desc: '饱食+20 心情+5', price: 16, effect: { satiety: 20, mood: 5 }, category: 'meal' },
-    noodle: { name: '海鲜乌冬', icon: '🍜', desc: '饱食+25 精力-5（鲜甜，女仆拿手）', price: 12, effect: { satiety: 25, energy: -5 }, category: 'meal' },
-    cake: { name: '奶油蛋糕', icon: '🍰', desc: '心情+10 饱食+10', price: 22, effect: { mood: 10, satiety: 10 }, category: 'meal' },
-    feast: { name: '豪华大餐', icon: '🍱', desc: '饱食+35 心情+15 精力+15', price: 40, effect: { satiety: 35, mood: 15, energy: 15 }, category: 'meal' },
-    // ---- 饮品 ----
-    water: { name: '矿泉水', icon: '💧', desc: '口渴度 +30', price: 8, effect: { thirst: 30 }, category: 'drink' },
-    milk: { name: '热牛奶', icon: '🥛', desc: '口渴+25 精力+8', price: 14, effect: { thirst: 25, energy: 8 }, category: 'drink' },
-    tea: { name: '茉莉花茶', icon: '🍵', desc: '口渴+25 心情+8（女仆泡茶手艺）', price: 16, effect: { thirst: 25, mood: 8 }, category: 'drink' },
-    juice: { name: '鲜榨果汁', icon: '🧃', desc: '口渴+30 心情+10', price: 18, effect: { thirst: 30, mood: 10 }, category: 'drink' },
-    milktea: { name: '珍珠奶茶', icon: '🧋', desc: '心情+15 精力+5', price: 18, effect: { mood: 15, energy: 5 }, category: 'drink' },
-    coffee: { name: '浓缩咖啡', icon: '☕', desc: '精力+15 心情-5（苦）', price: 8, effect: { energy: 15, mood: -5 }, category: 'drink' },
-    cola: { name: '蜂蜜柚子茶', icon: '🍋', desc: '口渴+25 心情+5', price: 12, effect: { thirst: 25, mood: 5 }, category: 'drink' },
-    // ---- 心意礼物（加好感度/心情，定价远高于普通道具）----
-    hairpin: { name: '蝴蝶结发饰', icon: '🎀', desc: '好感 +2，心情 +5', price: 60, effect: { affection: 2, mood: 5 }, category: 'gift' },
-    flower: { name: '深海花束', icon: '💐', desc: '好感 +3，心情 +8', price: 90, effect: { affection: 3, mood: 8 }, category: 'gift' },
-    bracelet: { name: '星砂手链', icon: '📿', desc: '好感 +4，心情 +6', price: 130, effect: { affection: 4, mood: 6 }, category: 'gift' },
-    brooch: { name: '珍珠胸针', icon: '🪸', desc: '好感 +6，心情 +10（女仆珍品）', price: 220, effect: { affection: 6, mood: 10 }, category: 'gift' },
-    // ---- 娱乐 ----
-    toy: { name: '鲸鱼玩偶', icon: '🐳', desc: '心情 +20（同类相吸）', price: 10, effect: { mood: 20 }, category: 'fun' },
-    drink: { name: '能量汽水', icon: '🥤', desc: '精力 +25', price: 15, effect: { energy: 25 }, category: 'fun' },
-    blindbox: { name: '神秘盲盒', icon: '🎁', desc: '随机效果 + 随机金币', price: 15, effect: null, category: 'fun' },
-  }
+  const ITEMS = window.NurtureRules.ITEMS
 
   let activeGame = 'catch'
 
   /* 等级称号表（按累计经验） */
-  const LEVELS = [
-    { exp: 0, title: '实习女仆' },
-    { exp: 50, title: '见习管家' },
-    { exp: 150, title: '初级管家' },
-    { exp: 300, title: '中级管家' },
-    { exp: 500, title: '高级管家' },
-    { exp: 800, title: '金牌管家' },
-    { exp: 1200, title: '首席管家' },
-    { exp: 1800, title: '深海传说' },
-  ]
+  const LEVELS = window.NurtureRules.LEVELS
   /* 成就定义 */
-  const ACHIEVEMENTS = [
-    { id: 'first-work', name: '第一次派活', desc: '完成第一次工作', icon: '💼', check: (p) => p.totalWorkDone >= 1 },
-    { id: 'work-10', name: '劳模管家', desc: '累计完成 10 次工作', icon: '🏅', check: (p) => p.totalWorkDone >= 10 },
-    { id: 'work-50', name: '金牌劳模', desc: '累计完成 50 次工作', icon: '👑', check: (p) => p.totalWorkDone >= 50 },
-    { id: 'gamer-10', name: '游戏达人', desc: '玩 10 局小游戏', icon: '🎮', check: (p) => p.totalGames >= 10 },
-    { id: 'gamer-50', name: '游戏狂魔', desc: '玩 50 局小游戏', icon: '🕹️', check: (p) => p.totalGames >= 50 },
-    { id: 'pomo-10', name: '专注学徒', desc: '完成 10 个番茄钟', icon: '🍅', check: (p) => p.pomodoros >= 10 },
-    { id: 'pomo-50', name: '专注大师', desc: '完成 50 个番茄钟', icon: '🧘', check: (p) => p.pomodoros >= 50 },
-    { id: 'streak-3', name: '三日之约', desc: '连续陪伴 3 天', icon: '📅', check: (p) => p.streak >= 3 },
-    { id: 'streak-7', name: '一周陪伴', desc: '连续陪伴 7 天', icon: '💞', check: (p) => p.streak >= 7 },
-    { id: 'streak-30', name: '不离不弃', desc: '连续陪伴 30 天', icon: '🏆', check: (p) => p.streak >= 30 },
-    { id: 'feed-20', name: '干饭人', desc: '投喂 20 次', icon: '🍪', check: (p) => (p.feedCount || 0) >= 20 },
-    { id: 'rich-300', name: '小富婆', desc: '金币达到 300', icon: '🪙', check: (p) => p.coins >= 300 },
-    { id: 'level-5', name: '晋升之路', desc: '升到 5 级', icon: '⭐', check: (p) => p.level >= 5 },
-    { id: 'work-min-60', name: '勤恳女仆', desc: '累计挂机工作 60 分钟', icon: '🧹', check: (p) => (p.workMinutes || 0) >= 60 },
-    { id: 'work-min-600', name: '工作狂魔', desc: '累计挂机工作 600 分钟', icon: '⏰', check: (p) => (p.workMinutes || 0) >= 600 },
-    { id: 'work-sess-20', name: '敬业员工', desc: '完成 20 次挂机工作', icon: '📋', check: (p) => (p.workSessions || 0) >= 20 },
-  ]
+  const ACHIEVEMENTS = window.NurtureRules.ACHIEVEMENTS
 
   /* ---------- 相册照片定义（照片 = 成就式解锁，用户提供图片 renderer/photos/<id>.png） ---------- */
   // 农历节日判定（lunar-javascript：Solar → Lunar；库缺失时降级为 false，不误判）
@@ -98,124 +263,8 @@
   // 解锁两类：
   //  - 事件型：代码里 unlockPhoto('id') 主动调用（首次启动/喂食/游戏/清洁等）
   //  - 数值型：checkPhotoUnlocks() 扫描 check(p)（累计次数/时长/金币等）
-  const PHOTOS = [
-    // 📖 时光流
-    { id: 'first-meet', name: '初次见面', cat: '时光流', desc: '初次见面那天，你轻轻点了下我', event: 'first-boot' },
-    { id: 'morning-first', name: '早安第一眼', cat: '时光流', desc: '每天第一眼的对视，早安', event: 'day-first-open' },
-    { id: 'noon-tea', name: '午后茶歇', cat: '时光流', desc: '午后的阳光里，一起喝杯茶', time: [13, 15] },
-    { id: 'dusk-sunset', name: '傍晚夕阳', cat: '时光流', desc: '夕阳西下，我们一起看橘色天空', time: [17, 19] },
-    { id: 'late-night', name: '深夜作伴', cat: '时光流', desc: '夜深了，还陪着你', time: [22, 24] },
-    { id: 'dawn-watch', name: '凌晨守候', cat: '时光流', desc: '凌晨的世界很安静，我在', time: [0, 4] },
-    { id: 'overtime-night', name: '加班夜', cat: '时光流', desc: '深夜加班，我也加班陪你', check: (p) => p.totalWorkDone >= 1 && new Date().getHours() >= 22 },
-    { id: 'weekend-lazy', name: '周末懒散', cat: '时光流', desc: '周末了，一起瘫在沙发放空', check: () => { const d = new Date().getDay(); return d === 0 || d === 6 } },
-    { id: 'winter-stove', name: '冬日暖炉', cat: '时光流', desc: '冬天缩在暖炉边，暖洋洋', check: () => { const m = new Date().getMonth() + 1; return m === 12 || m === 1 || m === 2 } },
-    { id: 'spring-promise', name: '春天约定', cat: '时光流', desc: '春天的樱花落在肩头，约定好了', check: () => { const m = new Date().getMonth() + 1; return m === 3 || m === 4 } },
-    /* （设计稿《相册场景清单》里写了但没实现的场景 + 少量新增场景）。
-       全部为 check 型（每 60s 心跳扫描）或事件型 —— 都**确实可触发**，不写死条件。 */
-    { id: 'night-owl', name: '熬夜搭子', cat: '时光流', desc: '过了 23 点还没睡，我陪你到最后', time: [23, 24] },
-    { id: 'cherry-blossom', name: '秋的故事', cat: '时光流', desc: '秋天枫叶红了，一起在落叶铺的路上走走吧', check: () => { const m = new Date().getMonth() + 1; return m === 10 || m === 11 }, },
-    { id: 'rainy-window', name: '雨天在家', cat: '时光流', desc: '外面下着雨，我们就在家待着（梅雨季的陪伴）', check: () => { const m = new Date().getMonth() + 1; return m >= 5 && m <= 9 }, },
-    { id: 'stargaze', name: '一起看星星', cat: '时光流', desc: '凌晨两点的窗外，星星很亮', check: () => { const h = new Date().getHours(); return h >= 0 && h < 2 }, },
-    // 🏠 生活琐事（动画事件）
-    { id: 'clean-time', name: '打扫时间', cat: '生活琐事', desc: '卷起袖子，把房间收拾得干干净净', event: 'clean-done' },
-    { id: 'tea-serve', name: '端茶送水', cat: '生活琐事', desc: '该喝水啦，我端过来了', event: 'water-drink' },
-    { id: 'bubble-time', name: '彩虹泡泡', cat: '生活琐事', desc: '偶然吹起的泡泡，五彩斑斓', check: (p) => (p.animSeen || []).includes('idle-bubbles') },
-    { id: 'mirror-look', name: '照镜子', cat: '生活琐事', desc: '偷看镜子里的自己，整理发梢', check: (p) => (p.animSeen || []).includes('idle-mirror') },
-    { id: 'hum-moment', name: '哼歌时刻', cat: '生活琐事', desc: '心情好时，哼哼小曲', check: (p) => (p.animSeen || []).includes('idle-hum') },
-    { id: 'fan-breeze', name: '扇风纳凉', cat: '生活琐事', desc: '给你扇扇风，凉快一下', check: (p) => (p.animSeen || []).includes('idle-fan') },
-    { id: 'stretch-time', name: '伸懒腰', cat: '生活琐事', desc: '陪你一起伸个懒腰', check: (p) => (p.animSeen || []).includes('idle-stretch') },
-    { id: 'little-chef', name: '小厨师', cat: '生活琐事', desc: '系上围裙，给你露一手', check: (p) => (p.animSeen || []).filter(n => n.startsWith('eat-') && !n.includes('caught')).length >= 1 },
-    { id: 'sleep-story', name: '睡前故事', cat: '生活琐事', desc: '夜深了，给你讲个小故事再睡', check: (p) => (p.stats && p.stats.energy < 30) && new Date().getHours() >= 21 },
-    /* 设计稿 #18 #19 #30 #54 #63 + 新增场景（全部可触发） */
-    { id: 'lunch-bento', name: '美味便当', cat: '生活琐事', desc: '午饭时间到，给你做了便当', check: (p) => (p.feedCount || 0) >= 1 && (() => { const h = new Date().getHours(); return h >= 11 && h < 13 })() },
-    { id: 'head-pat', name: '摸头杀', cat: '生活琐事', desc: '被摸摸头，眯起眼睛蹭手心', event: 'head-pat' },
-    { id: 'new-term-note', name: '新学期寄语', cat: '生活琐事', desc: '课程表排好了，抱着书等你上课', check: (p) => (p.schedule || []).length >= 1 },
-    { id: 'sneeze', name: '打喷嚏', cat: '生活琐事', desc: '哈啾！有点着凉了，揉揉鼻头', check: (p) => (p.stats && p.stats.energy < 40) && (() => { const h = new Date().getHours(); return h >= 0 && h < 6 })() },
-    // 🎮 一起玩
-    { id: 'first-game', name: '初次入局', cat: '一起玩', desc: '陪主人玩的第一个游戏', event: 'game-play' },
-    { id: 'gomoku-win', name: '棋逢对手', cat: '一起玩', desc: '五子棋赢啦！不服再来', check: (p) => (p.gameWins || []).includes('gomoku') },
-    { id: 'guess-win', name: '同猜数字', cat: '一起玩', desc: '猜数字猜中了，默契满分', check: (p) => (p.gameWins || []).includes('guess') },
-    { id: 'mines-clear', name: '扫雷英雄', cat: '一起玩', desc: '扫雷通关！长舒一口气', check: (p) => (p.gameWins || []).includes('mines') },
-    { id: 'victory-10', name: '胜者欢呼', cat: '一起玩', desc: '玩了十局游戏，举着小旗欢呼', check: (p) => p.totalGames >= 10 },
-    { id: 't2048-master', name: '数字达人', cat: '一起玩', desc: '2048 合出 512，反应真快', check: (p) => (p.gameWins || []).includes('t2048') },
-    { id: 'snake-king', name: '贪吃蛇王', cat: '一起玩', desc: '贪吃蛇吃得越来越长', check: (p) => (p.gameWins || []).includes('snake') },
-    { id: 'sudoku-master', name: '数独挑战', cat: '一起玩', desc: '数独解出来啦！', check: (p) => (p.gameWins || []).includes('sudoku') },
-    { id: 'tickle-battle', name: '挠痒大战', cat: '一起玩', desc: '被挠得笑到缩成一团', check: (p) => (p.animSeen || []).includes('click-tickle') },
-    { id: 'tsundere-moment', name: '撒娇时刻', cat: '一起玩', desc: '哼哼，别过头去——其实很开心', check: (p) => (p.animSeen || []).includes('click-tsundere') },
-    { id: 'caught-eating', name: '偷吃被抓', cat: '一起玩', desc: '偷吃零食被主人抓个正着', check: (p) => (p.animSeen || []).includes('eat-caught') },
-    // 💼 一起工作
-    { id: 'first-day', name: '第一天上班', cat: '一起工作', desc: '第一次给主人干活，紧张又认真', check: (p) => (p.workSessions || 0) >= 1 },
-    { id: 'hard-coding', name: '认真敲码', cat: '一起工作', desc: '一干就是半小时，超认真', check: (p) => (p.workMinutes || 0) >= 30 },
-    { id: 'diligent-maid', name: '勤奋女仆', cat: '一起工作', desc: '累计工作 60 分钟，擦擦汗继续', check: (p) => (p.workMinutes || 0) >= 60 },
-    { id: 'exhausted-maid', name: '累瘫了', cat: '一起工作', desc: '累计工作 600 分钟，趴桌上还想着干', check: (p) => (p.workMinutes || 0) >= 600 },
-    { id: 'model-worker', name: '劳模认证', cat: '一起工作', desc: '完成 20 次工作，戴上劳模小帽', check: (p) => (p.workSessions || 0) >= 20 },
-    { id: 'top-employee', name: '满级宠臣', cat: '一起工作', desc: '完成 50 次工作，闪闪发光', check: (p) => (p.workSessions || 0) >= 50 },
-    { id: 'pomo-master', name: '番茄大师', cat: '一起工作', desc: '完成 10 个番茄钟，专注度拉满', check: (p) => (p.pomodoros || 0) >= 10 },
-    { id: 'efficient-lunch', name: '高效午餐', cat: '一起工作', desc: '边吃饭边盯屏幕，效率大师', check: (p) => (p.animSeen || []).some(n => n.startsWith('eat-') && (p.workMinutes || 0) > 0) },
-    { id: 'remember-me', name: '帮我记住', cat: '一起工作', desc: '都记下来，绝不忘记', check: (p) => (p.memos || []).length >= 1 },
-    { id: 'schedule-manager', name: '日程管家', cat: '一起工作', desc: '整周的行程都排上了，安排得明明白白', check: (p) => (p.schedule || []).length >= 5 },
-    // 🎉 节日纪念
-    { id: 'owner-birthday', name: '生日快乐', cat: '节日纪念', desc: '主人的生日！蛋糕准备好了', event: 'owner-birthday' },
-    { id: 'pet-birthday', cat: '节日纪念', event: 'pet-birthday', get name() { try { return petName() + '的生日' } catch (e) { return '生日' } }, get desc() { try { return petName() + '自己的小小庆祝日' } catch (e) { return '自己的小小庆祝日' } } },
-    { id: 'new-year', name: '新年快乐', cat: '节日纪念', desc: '新年第一天，穿红围裙拜年', check: () => { const d = new Date(); return d.getMonth() === 0 && d.getDate() === 1 } },
-    { id: 'reunion-night', name: '团圆年', cat: '节日纪念', desc: '春节啦，一起吃年夜饭', check: () => isLunarFestival(1, 1) },
-    { id: 'lantern-festival', name: '元宵花灯', cat: '节日纪念', desc: '提着灯笼，看花灯亮起来', check: () => isLunarFestival(1, 15) },
-    { id: 'dragon-boat', name: '端午粽香', cat: '节日纪念', desc: '粽子煮好啦，切开尝尝', check: () => isLunarFestival(5, 5) },
-    { id: 'mid-autumn', name: '中秋赏月', cat: '节日纪念', desc: '月亮好圆，一起吃月饼', check: () => isLunarFestival(8, 15) },
-    { id: 'christmas-night', name: '圣诞夜', cat: '节日纪念', desc: '戴上圣诞帽，圣诞快乐', check: () => { const d = new Date(); return d.getMonth() === 11 && d.getDate() >= 24 && d.getDate() <= 25 } },
-    { id: 'halloween', name: '万圣节', cat: '节日纪念', desc: '不给糖就捣蛋～', check: () => { const d = new Date(); return d.getMonth() === 9 && d.getDate() === 31 } },
-    { id: 'school-start', name: '开学第一天', cat: '节日纪念', desc: '新学期开始啦，要加油', event: 'schedule-add' },
-    // 😊 情绪时刻
-    { id: 'flying-happy', name: '开心到飞起', cat: '情绪时刻', desc: '好感度满格，开心得飘起来', check: (p) => (p.affection || 0) >= 100 },
-    { id: 'tsundere-3', name: '哼哼傲娇', cat: '情绪时刻', desc: '连点三次才知道你想逗我', event: 'click-3' },
-    { id: 'shy-whale', name: '害羞小鲸', cat: '情绪时刻', desc: '被逗到脸红，把头埋起来', event: 'click-5' },
-    { id: 'miss-you', name: '想你了', cat: '情绪时刻', desc: '一天没见，趴在窗边嘀咕', check: (p) => {
-      // 融合判定：A=这次启动**距上次启动 ≥3 天**（用启动时快照 R.awayDaysAway）；
-      //          B=常开桌宠但 ≥72h 无互动（lastInteractionAt）
-      // 满足其一即触发——覆盖"不常开"和"常开不理我"两类用户。
-      // ⚠ A 分支此前恒为假 —— checkPhotoUnlocks 开头会先 updateStreak
-      //   把 P.lastSeenDate 写成今天，等这里再算 dayGap 就永远是 0。
-      //   现在改成用"启动时捕获的离开天数"（loadState 里先算好，见 R.awayDaysAway），
-      //   与 lastSeenDate 的更新顺序解耦。
-      // lastInteractionAt===0 表示"无记录"（旧数据/首次），不触发 B。
-      const away = (typeof R !== 'undefined' && R && typeof R.awayDaysAway === 'number') ? R.awayDaysAway : 0
-      const interactionGap = p.lastInteractionAt ? (Date.now() - p.lastInteractionAt) / 3600000 : Infinity
-      return away >= 3 || (p.lastInteractionAt > 0 && interactionGap >= 72)
-    } },
-    { id: 'sad-moment', name: '委屈巴巴', cat: '情绪时刻', desc: '状态不太好，委屈得想哭', check: (p) => p.stats && p.stats.mood < 30 },
-    { id: 'full-energy', name: '元气满满', cat: '情绪时刻', desc: '饱饱的、心情好、精神足', check: (p) => p.stats && p.stats.satiety > 80 && p.stats.mood > 80 && p.stats.energy > 80 },
-    { id: 'sleepy-eyes', name: '困到睁不开', cat: '情绪时刻', desc: '眼皮打架，还是想陪你', check: (p) => p.stats && p.stats.energy < 20 },
-    { id: 'praised', name: '被夸害羞', cat: '情绪时刻', desc: '被主人夸了，脸有点红', event: 'praised' },
-    // 🌱 成长养成
-    { id: 'first-cookie', name: '第一块饼干', cat: '成长养成', desc: '第一次喂食，舍不得吃', check: (p) => (p.feedCount || 0) >= 1 },
-    { id: 'big-eater', name: '干饭小鲸', cat: '成长养成', desc: '喂食 20 次，胃口超好', check: (p) => (p.feedCount || 0) >= 20 },
-    { id: 'piggy-bank', name: '存钱罐', cat: '成长养成', desc: '金币攒到 300，抱紧存钱罐', check: (p) => (p.coins || 0) >= 300 },
-    { id: 'rich-girl', name: '小富婆', cat: '成长养成', desc: '金币破千，数钱数到手软', check: (p) => (p.coins || 0) >= 1000 },
-    { id: 'three-days', name: '连续守护', cat: '成长养成', desc: '连续陪伴 3 天，慢慢习惯你', check: (p) => (p.streak || 0) >= 3 },
-    { id: 'week-promise', name: '一周之约', cat: '成长养成', desc: '连续陪伴 7 天，约定好了', check: (p) => (p.streak || 0) >= 7 },
-    { id: 'month-bond', name: '一个月羁绊', cat: '成长养成', desc: '连续陪伴 30 天，早就离不开', check: (p) => (p.streak || 0) >= 30 },
-    { id: 'level-up', name: '升级啦', cat: '成长养成', desc: '升到 5 级，头顶发光', check: (p) => (p.level || 0) >= 5 },
-    /* 死路：原条件 `level >= 10` 永远不成立（等级表只有 8 档 ⇒ lv 恒 ≤ 8）。
-       先改成"满级（Lv.8 · 深海传说）"，**确实可达**；将来若加了 9/10 级（长期方案 C），
-       把这里跟着调回 10 即可 —— 两处都在本文件，改一行。 */
-    { id: 'deep-sea', name: '深海传说', cat: '成长养成', desc: '升到满级 Lv.8「深海传说」，庄重地行个礼', check: (p) => (p.level || 0) >= 8 },
-    /* 成长/进度类（都可触发） */
-    /* 番茄钟**不写 workLog**（`focusComplete` 只加 P.pomodoros + diaryEvent），
-       所以这里用累计番茄数 + "到晚上 18 点后"来判定"今天连做三个"。 */
-    // 💌 特别记忆
-    { id: 'surprise-gift', name: '惊喜礼物', cat: '特别记忆', desc: '好感度升档，藏了份小礼物', event: 'affection-up' },
-    { id: 'diary-time', name: '日记时光', cat: '特别记忆', desc: '写下第一篇日记，记录今天', check: (p) => ((Array.isArray(p.diaryOutputs) ? p.diaryOutputs.length : 0) > 0) || ((Array.isArray(p.diary) ? p.diary.length : 0) > 0) }, // 2026-09-26 AL-3：P.diary 是 legacy（新版写 P.diaryOutputs）⇒ 条件与写成功路径一致
-    { id: 'reunion-moment', name: '重逢时刻', cat: '特别记忆', desc: '好久不见，扑上来抱住你', check: (p) => !!p.lastReunionDate },
-    { id: 'daily-summary', name: '今日小结', cat: '特别记忆', desc: '今天的任务全完成啦', event: 'daily-all-done' },
-    { id: 'thanks-company', name: '谢谢陪伴', cat: '特别记忆', desc: '陪伴一百个日日夜夜，谢谢你', check: (p) => (p.bootCount || 0) >= 100 },
-    { id: 'peaceful-time', name: '岁月静好', cat: '特别记忆', desc: '深夜还在待机，岁月静好', check: () => { const h = new Date().getHours(); return h >= 22 } },
-    /* 钱包/陪伴类（可触发） */
-    { id: 'empty-pocket', name: '钱包空空', cat: '特别记忆', desc: '金币见底了…我会省着点的', check: (p) => (typeof p.coins === 'number') && p.coins <= 10 },
-    { id: 'movie-night', name: '一起看电影', cat: '特别记忆', desc: '十一点了还在放片子，我陪你看完', check: () => { const h = new Date().getHours(); return h === 23 } },
-    /* 今天和小深的聊天次数（`P.chatCountToday` 由发送路径按天计数） */
-    { id: 'chat-ten', name: '陪我聊聊', cat: '特别记忆', desc: '今天和我说了好多话，我记着呢', check: (p) => (p.chatCountToday || 0) >= 10 },
-  ]
-  const P = {
+  const PHOTOS = window.NurtureRules.photoDefinitions({ getName: petName, getAway: () => R.awayDaysAway, Solar: window.Solar })
+  const stateDefaults = {
     coins: 20,
     name: '小深',
     summarySessionId: '',
@@ -295,6 +344,8 @@
     daySnapshot: null,
   }
 
+  const kernelState = window.pet.character?.authority ? window.PetState.projection(stateDefaults) : null
+  const P = kernelState ? kernelState.state : stateDefaults
   const PetStateApi = window.PetState.create(P)
   window.PetStateApi = PetStateApi // 3.0 Context 只读读取入口
 
@@ -354,6 +405,14 @@
 
   let stateWritable = true
   async function loadState() {
+    if (window.pet.character?.authority) {
+      for (let attempt = 0; attempt < 150; attempt++) {
+        const projection = await window.pet.character.read()
+        if (projection?.ok) { applyKernelProjection(projection); return }
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      throw new Error('Kernel 状态尚未就绪，已保留原数据。')
+    }
     let savedRelationship = null
     try {
       let loaded
@@ -365,7 +424,7 @@
       }
       let saved = loaded && loaded.ok ? loaded.state : await window.pet.stateLoad()
       if (loaded && (loaded.recovery || loaded.status === 'recovered')) {
-        setTimeout(() => say('上次的状态文件未能读取，已从备份恢复。最近的部分变化可能未保留，原文件已留存。', 12000, 'ui'), 2000)
+        setTimeout(() => systemNotice('上次的状态文件未能读取，已从备份恢复。最近的部分变化可能未保留，原文件已留存。', 12000, 'ui'), 2000)
       }
       if (window.StateStore && saved && typeof saved === 'object') saved = window.StateStore.migrate(saved)
       if (saved && typeof saved === 'object') {
@@ -515,7 +574,7 @@
       }
     } catch (err) {
       console.log('state load failed', err && err.message)
-      if (!stateWritable) setTimeout(() => say('状态文件暂时无法恢复，原文件已保留。本次修改不会保存，请查看恢复记录。', 15000, 'ui'), 1500)
+      if (!stateWritable) setTimeout(() => systemNotice('状态文件暂时无法恢复，原文件已保留。本次修改不会保存，请查看恢复记录。', 15000, 'ui'), 1500)
     }
     if (window.RelationshipEngine) window.RelationshipEngine.init(P, savedRelationship)
     try {
@@ -647,6 +706,10 @@
   }
 
   function saveState() {
+    if (window.pet.character?.authority) {
+      const preferences = Object.fromEntries(window.NurtureRules.UI_PREFERENCE_FIELDS.filter(key => P[key] !== undefined).map(key => [key, P[key]]))
+      return window.pet.character.submit({ kind: 'settings.update', payload: { preferences } })
+    }
     if (!stateWritable) return Promise.resolve(false)
     P.lastTick = Date.now()
     return Promise.resolve(window.StateStore.save(P)).catch(() => {
@@ -657,6 +720,7 @@
 
   // 记录互动（"想你了"判定用：主人触碰/聊天/喂食/游戏/工作都算"被理会"）
   function touch() {
+    if (window.pet.character?.authority) { void submitKernelInteraction({ kind: 'touch' }); return }
     P.lastInteractionAt = Date.now()
   }
 
@@ -713,6 +777,7 @@
   }
 
   function runAmbientPresence() {
+    return { ok: false, reason: "runtime_owned" }
     try {
       if (!window.IntentEngine || typeof window.IntentEngine.evaluatePresence !== 'function') return
       const snap = window.CharacterSnapshot && typeof window.CharacterSnapshot.toCharacterContext === 'function' ? window.CharacterSnapshot.toCharacterContext() : null
@@ -955,7 +1020,8 @@
 
   let bubbleSeq = 0
   let bubbleOwner = ''
-  function beginBubble(owner) {
+  function beginBubble(owner, execution) {
+    if (!roleRuntime.isAuthorized(execution)) return null
     const newPriority = BUBBLE_PRIORITY[owner] || 0
     if (bubbleOwner) {
       const curPriority = BUBBLE_PRIORITY[bubbleOwner] || 0
@@ -963,10 +1029,12 @@
     }
     bubbleSeq++
     bubbleOwner = owner
+    runtimeBubblePermits.set(bubbleSeq, execution)
+    while (runtimeBubblePermits.size > 16) runtimeBubblePermits.delete(runtimeBubblePermits.keys().next().value)
     return bubbleSeq
   }
   function bubbleTokenValid(token) {
-    return token === bubbleSeq
+    return token === bubbleSeq && roleRuntime.isAuthorized(runtimeBubblePermits.get(token))
   }
   function endBubble(token) {
     if (token === bubbleSeq) bubbleOwner = ''
@@ -996,11 +1064,22 @@
     return clamp(2600 + Math.min(len, 80) * 35, 2600, 7000)
   }
 
-  function say(text, ms, source, token) {
+  function say(text, ms, source, token, execution) {
+    execution = execution || runtimeBubblePermits.get(token)
+    if (!roleRuntime.isAuthorized(execution)) {
+      if (source !== 'ui' && source !== 'user-feedback') return { ok: false, reason: 'runtime_authorization_required' }
+      if (!text) return { ok: false, reason: 'empty_text' }
+      void runtimeNotify(permit => say(text, ms, 'ui', undefined, permit), 'local:' + String(text), source === 'user-feedback' ? 'user-feedback' : 'automatic')
+      return { ok: true, queued: true, displayed: false }
+    }
+    if (R.hidden) return { ok: false, reason: 'hidden' }
+    return execution.publish(() => writeSay(text, ms, source, token))
+  }
+  function writeSay(text, ms, source, token) {
     if (!source) return { ok: false, reason: 'no_source' }
     const src = source
     const life = window.PetLife && window.PetLife.context(Date.now())
-    const permit = livingPresence.canSpeak({ source: src, text, token, hidden: R.hidden, busy: R.busy || chatBusy || charcBusy, quietUntil: life && life.livingState && life.livingState.quietUntil })
+    const permit = livingPresence.canSpeak({ source: src, text, token, hidden: R.hidden, busy: R.busy || chatBusy || charcBusy, quietUntil: roleRuntime.snapshot().quietUntil })
     if (!permit.ok) return permit
     if (src !== 'ui' && token === undefined) return { ok: false, reason: 'missing_token' }
     if (!bubbleCanWrite(src)) return { ok: false, reason: 'owner_rejected' }
@@ -1071,6 +1150,9 @@
   }
 
   function showReport(summary, fullText) {
+    roleRuntime.cancel('technical_report', event => event.origin === 'automatic')
+    // Work reports are technical results, never a second character reply pipeline.
+    summary = '工作结果：' + String(summary || '')
     // 选项卡（授权/提问）优先级更高：正在展示时先排队，交互处理完自动恢复
     if (pendingInter && bubbleEl.classList.contains('dp-bubble-interaction')) {
       queuedReport = { summary, fullText }
@@ -1461,6 +1543,7 @@
   }
 
   function armIdleChain() {
+    if (window.pet.character?.authority) return
     // 已在链上则不重置（updateMood 高频调用会反复走这里，
     // 若每次 reset 20s 定时器，表演/彩蛋永远到不了点——思考动画与待机"冲突"的根因）
     if (animTimer || R.hidden) return
@@ -1476,9 +1559,9 @@
       const life = window.PetLife && window.PetLife.context(Date.now())
       const activity = life && (life.activeActivity || (life.activities || []).find(a => a.status === "active"))
       const embodied = activity && activity.animationName
-      if (embodied && !failedAnimations.has(embodied) && $("anim-" + embodied)) { showAnimOnce(embodied); return }
+      if (embodied && !failedAnimations.has(embodied) && $("anim-" + embodied)) { const permit = roleRuntime.continuation(activity.runtimeContinuation); if (permit) showAnimOnce(embodied, 10000, permit); else armIdleChain(); return }
       const livingAnim = window.LivingPresence.activityAnimation(life, window.AnimationRegistry.list().map(a => typeof a === "string" ? a : a.name || a.id))
-      if (livingAnim) { showAnimOnce(livingAnim); return }
+      if (livingAnim && roleRuntime.continuation(activity && activity.runtimeContinuation)) { showAnimOnce(livingAnim, 10000, roleRuntime.continuation(activity.runtimeContinuation)); return }
       if (activeIntent && activeIntent !== 'idle') { armIdleChain(); return }
       // Full little activities come from PetLife's motives; ambient motion stays small.
       const pool = window.BehaviorDirector.ambientPool({ R, P }).filter(n => !failedAnimations.has(n) && !window.LivingPresence.ACTIONS[n])
@@ -1512,11 +1595,26 @@
   }
 
   function showAnim(name, lockMs, onEnded, metaOverride) {
+    if (window.pet.character?.authority) {
+      if (window.CharacterView?.state().animation && name !== 'drag-carry') return { ok: false, reason: 'kernel_animation_owned' }
+      if (name === 'drag-carry') window.CharacterView?.interruptAnimation('owner_drag')
+      if (onEnded) return { ok: false, reason: 'kernel_animation_required' }
+    }
+    const requestedAnimation = name
+    if ((!name || failedAnimations.has(name) || !$('anim-' + name)) && window.LivingPresence.ACTIONS[name]) return { ok: false, reason: 'virtual_asset_missing' }
     if (!name || failedAnimations.has(name) || !$('anim-' + name)) {
       name = (ANIM_GROUPS[R.running ? 'working' : 'idle'] || []).find(n => !failedAnimations.has(n) && $('anim-' + n))
       if (!name) { cancelIdleChain(); return }
     }
-    if (name === currentAnimName) return
+    const activityAnimation = window.LivingPresence.ACTIONS[name]
+    const execution = metaOverride && metaOverride.runtimeExecution
+    if (activityAnimation && !roleRuntime.isAuthorized(execution)) return { ok: false, reason: 'runtime_authorization_required' }
+    if (name === currentAnimName && (!execution || currentAnimationOwner === execution.executionId)) return
+    const claimed = presentationPlans ? presentationPlans.claim({ owner: execution && execution.executionId || 'local-body', channel: 'body',
+      priority: metaOverride && metaOverride.priority || 10, semanticId: activityAnimation ? 'virtual:' + requestedAnimation : requestedAnimation,
+      force: R.dragging, isCurrent: execution ? () => roleRuntime.isAuthorized(execution) && !R.hidden : () => !R.hidden }) : { ok: true }
+    if (!claimed.ok) return claimed
+    currentAnimationOwner = execution && execution.executionId || null
     recordAnimTransition({ requested: name, previous: currentAnimName, reason: onEnded ? 'one-shot' : 'state' })
     if (window.AnimationPlayer && typeof window.AnimationPlayer.stop === 'function') {
       try { window.AnimationPlayer.stop('transition') } catch (err) { /* ignore */ }
@@ -1582,20 +1680,42 @@
       else target.onloadeddata = reveal
       window.AnimationPlayer.play(name, target, {
         once: !!onEnded,
-        onEnded: onEnded ? () => {
+        onStarted: () => {
+          if (animationRunId === animationRunSeq && presentationPlans) presentationPlans.stage(claimed.token, 'playback_started', { animation: name, fallback: requestedAnimation !== name })
+        },
+        onEnded: onEnded ? async () => {
           if (animationRunId !== animationRunSeq) return
+          if (presentationPlans && !presentationPlans.current(claimed.token)) return
+          if (presentationPlans) presentationPlans.stage(claimed.token, 'playback_completed', { animation: name, fallback: requestedAnimation !== name })
           window.AnimationDirector.end('ended')
           if (window.EventBus) window.EventBus.emitOnce('pet.animation.ended', { name, animationRunId }, 'anim:' + animationRunId + ':ended')
-          if (window.PetLife && window.PetLife.recordEvent && window.LivingPresence.ACTIONS[name]) window.PetLife.recordEvent({ type: 'animation.completed', eventId: 'animation:' + livingSessionId + ':' + animationRunId, ts: Date.now(), animation: name, visible: !R.hidden }).then(renderLivingNotebook).catch(err => console.warn('[living] receipt:', err.message))
+          if (activityAnimation && execution && execution.isCurrent()) {
+            const life = window.PetLife.context(Date.now()), active = life.activities.find(a => a.runtimeExecutionId === execution.executionId && a.animationName === name)
+            const continuationId = active && active.runtimeContinuation || meta.continuationId
+            if (continuationId) {
+              try {
+                const receipt = await window.PetLife.recordEvent({ type: 'animation.completed', eventId: 'animation:' + livingSessionId + ':' + animationRunId,
+                  ts: Date.now(), animation: name, visible: !R.hidden, executionId: execution.executionId, continuationId })
+                if (receipt && receipt.ok && platformBridge) await platformBridge.operationUpdate('activity:' + execution.executionId, 'completed',
+                  { ok: true, sourceType: 'animation.completed', virtual: true, animation: name, eventAt: Date.now() })
+                renderLivingNotebook(); if (receipt && receipt.ok) roleRuntime.completeContinuation(continuationId)
+              } catch (err) { console.warn('[living] receipt:', err.message) }
+            }
+          }
+          if (animationRunId !== animationRunSeq) return
           onEnded()
         } : null,
         onError: () => {
           if (animationRunId !== animationRunSeq) return
+          if (presentationPlans) presentationPlans.stage(claimed.token, 'playback_failed', { animation: name })
           window.AnimationDirector.end('error')
           if (window.EventBus) window.EventBus.emitOnce('pet.animation.cancelled', { name, animationRunId }, 'anim:' + animationRunId + ':cancelled')
           animLockUntil = 0
           currentAnimName = null
           failedAnimations.add(name)
+          if (execution && platformBridge) void platformBridge.operation('activity:' + execution.executionId).then(op => {
+            if (op && op.status === 'awaiting_receipt') return platformBridge.operationUpdate(op.id, 'failed', { ok: false, reason: 'playback_failed', virtual: true, eventAt: Date.now() })
+          }).catch(e => console.warn('[presentation]', e.message))
           updateMood()
         }
       })
@@ -1607,70 +1727,12 @@
   function afterOneShotAnimation() {
     animLockUntil = 0
     currentAnimName = null
-    let nextMood = effectiveAnimationMood()
-    if (nextMood !== 'idle' && nextMood !== 'working') { playAnim(nextMood); return }
-    if (window.IntentEngine) {
-      const intentSnap = window.IntentEngine.reconsider({
-        currentBehavior: window.BehaviorDirector ? { kind: window.BehaviorDirector.getCurrent(), interruptible: true } : null,
-        R, P
-      })
-      if (window.BehaviorDirector && window.BehaviorDirector.setActiveIntent) {
-        window.BehaviorDirector.setActiveIntent(intentSnap)
-        const plan = window.BehaviorDirector.planForIntent
-          ? window.BehaviorDirector.planForIntent(intentSnap)
-          : null
-        let exprPlan = null
-        if (window.ExpressionEngine && plan) {
-          exprPlan = window.ExpressionEngine.createPlan({ intent: intentSnap, behavior: plan })
-          if (exprPlan && exprPlan.requestId) window.ExpressionEngine.activatePlan(exprPlan.requestId)
-        }
-        if (exprPlan && exprPlan.channels && exprPlan.channels.animation && exprPlan.channels.animation.candidate) {
-          if (exprPlan.channels.dialogue && window.DialogueEngine && window.DialogueEngine.resolveForExpression) {
-            if (activeDialogueRequestId && window.DialogueEngine.cancelRequest) {
-              window.DialogueEngine.cancelRequest(activeDialogueRequestId)
-            }
-            activeDialogueRequestId = exprPlan.requestId
-            window.DialogueEngine.resolveForExpression(exprPlan, { context: {} }).then((r) => {
-              if (activeDialogueRequestId === exprPlan.requestId) {
-                if (r && r.ok && r.result && r.result.status === 'spoken' && r.result.text) {
-                  const beats = r.result.beats
-                  const exprToken = beginBubble('expression')
-                  if (!exprToken) { activeDialogueRequestId = null; return }
-                  if (Array.isArray(beats) && beats.length > 1) sayBeats(beats, exprToken)
-                  else { say(r.result.text, 5000, 'expression', exprToken); if (bubbleTokenValid(exprToken)) endBubble(exprToken) }
-                }
-                activeDialogueRequestId = null
-              }
-            }).catch(() => {})
-          }
-          // Intent → BehaviorPlan → ExpressionPlan → AnimationRequest
-          // Execution is delegated to AnimationDirector/Player through showAnim().
-          showAnim(exprPlan.channels.animation.candidate, 10000, afterOneShotAnimation, {
-            source: 'expression',
-            priority: 60,
-            interruptible: true,
-            reason: 'expression-plan'
-          })
-          return
-        }
-        if (plan && plan.behavior && plan.behavior.candidate) {
-          // Compatibility fallback if ExpressionEngine was unavailable/empty.
-          showAnim(plan.behavior.candidate, 10000, afterOneShotAnimation)
-          return
-        }
-        // No dedicated content: fall through to marked legacy fallback below.
-      }
-    }
-    if (window.BehaviorDirector) {
-      const next = window.BehaviorDirector.reconsider({ R, P })
-      if (next && next.mood) nextMood = next.mood
-    }
-    playAnim(nextMood)
+    playAnim(effectiveAnimationMood())
   }
 
   // 一次性动画便捷入口：播完一遍后按当前状态恢复（工作态→工作动画；空闲→待机）
-  function showAnimOnce(name, lockMs) {
-    showAnim(name, lockMs, afterOneShotAnimation)
+  function showAnimOnce(name, lockMs, execution) {
+    showAnim(name, lockMs, afterOneShotAnimation, execution ? { source: "runtime", runtimeExecution: execution } : null)
   }
 
   function playAnim(mood) {
@@ -1838,13 +1900,7 @@
 
   /* ---------- 养成 A/B/D：好感度 / 每日任务签到 / 随机事件 ---------- */
 
-  const AFF_LEVELS = [
-    { min: 0, name: '初识' },
-    { min: 25, name: '熟悉' },
-    { min: 50, name: '亲近' },
-    { min: 75, name: '信赖' },
-    { min: 100, name: '羁绊' },
-  ]
+  const AFF_LEVELS = window.NurtureRules.AFF_LEVELS
 
   function affInfo() {
     let cur = AFF_LEVELS[0]
@@ -1853,6 +1909,7 @@
   }
 
   function addAffection(n) {
+    if (window.pet.character?.authority) return
     const before = affInfo().name
     if (window.RelationshipEngine) {
       window.RelationshipEngine.addAffection(P, n, { source: 'pet-legacy', kind: 'legacy_affection', ruleId: 'REL-LEGACY-AFFECTION' })
@@ -1873,6 +1930,7 @@
   }
 
   function ensureDaily() {
+    if (window.pet.character?.authority) return
     const k = dailyKey()
     if (P.daily.date !== k) {
       P.daily = {
@@ -1903,6 +1961,7 @@
   }
 
   function markDaily(id) {
+    if (window.pet.character?.authority) return
     ensureDaily()
     const t = P.daily.tasks.find((x) => x.id === id)
     if (!t || t.done) return
@@ -1938,6 +1997,7 @@
   }
 
   function signIn() {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'sign' })
     ensureDaily()
     const k = dailyKey()
     if (P.daily.lastSign === k) { say('今天已经签过到啦，明天再来～', undefined, 'ui'); return }
@@ -2044,6 +2104,7 @@
   }
 
   function gainExp(n) {
+    if (window.pet.character?.authority) return
     const before = P.level
     P.exp += n
     const info = levelInfo(P.exp)
@@ -2062,6 +2123,7 @@
   }
 
   function checkAchievements() {
+    if (window.pet.character?.authority) return renderAchievements()
     ACHIEVEMENTS.forEach((a) => {
       if (P.achievements.includes(a.id)) return
       if (!a.check(P)) return
@@ -2127,6 +2189,7 @@
 
   // 解锁一张照片（事件型：首次启动/喂食/游戏等函数里主动调用）
   function unlockPhoto(id) {
+    if (window.pet.character?.authority) return
     const p = PHOTOS.find((x) => x.id === id)
     if (!p) return
     if (P.photos[id]) return
@@ -2137,6 +2200,7 @@
 
   // 扫描解锁（数值型/时间型：在 saveState 前后重要的状态检查点调用）
   function checkPhotoUnlocks() {
+    if (window.pet.character?.authority) return
     // 每日事件（电脑常开不重启也生效）：每天第一次扫描 = 新的一天
     // - 更新连续天数（streak）
     // - 解锁"早安第一眼"
@@ -2180,6 +2244,7 @@
 
   // 记录游戏胜利（照片补发用：gameWins 供 check 型照片回溯历史）
   function markGameWin2(game) {
+    if (window.pet.character?.authority) return
     if (P.gameWins.indexOf(game) < 0) {
       P.gameWins.push(game)
       saveState()
@@ -2327,7 +2392,7 @@
     return isPetBirthday
   }
 
-  function ensureDaySnapshot() {
+  function ensureDaySnapshot(execution) {
     const today = dayKey(new Date())
     if (!P.daySnapshot || P.daySnapshot.date !== today) {
       P.daySnapshot = { date: today, work: P.totalWorkDone, games: P.totalGames, pomos: P.pomodoros, feeds: P.feedCount }
@@ -2335,6 +2400,7 @@
     // 官方生日（7月17日）：当天祝福一次 + 数值加成 + 专属台词
     checkPetBirthday()
     if (isPetBirthday && P.lastPetBirthdayGreeted !== today) {
+      if (!roleRuntime.isAuthorized(execution)) { void runtimeNotify(permit => { ensureDaySnapshot(permit); return { ok: true } }, 'pet-birthday:' + today); return }
       P.lastPetBirthdayGreeted = today
       P.stats.mood = clamp(P.stats.mood + 15, 0, 100)
       P.stats.energy = clamp(P.stats.energy + 10, 0, 100)
@@ -2353,6 +2419,7 @@
       const now = new Date()
       const bd = P.ownerBirthday.split('-').map(Number)
       if (now.getMonth() + 1 === bd[1] && now.getDate() === bd[2]) {
+        if (!roleRuntime.isAuthorized(execution)) { void runtimeNotify(permit => { ensureDaySnapshot(permit); return { ok: true } }, 'owner-birthday:' + today); return }
         P.lastBirthdayGreeted = today
         P.coins += 30
         P.stats.mood = clamp(P.stats.mood + 10, 0, 100)
@@ -2366,7 +2433,7 @@
         saveState()
         renderCare()
         updateCoins()
-        setTimeout(() => showBirthdayCard(), 1200)
+        showBirthdayCard(execution)
         unlockPhoto('owner-birthday')
       } else {
         // 非生日当天，确保明天还会检查
@@ -2377,12 +2444,13 @@
 
   // 用户生日祝福卡（渲染层交互卡，点「查收」打开独立贺卡窗口）：
   // 桌宠窗口是 transparent+frame:false，主进程 dialog 会挂起，所以自绘卡片，且必须点按钮才消失
-  function showBirthdayCard() {
+  function showBirthdayCard(execution) {
+    if (!roleRuntime.isAuthorized(execution)) { void runtimeNotify(permit => showBirthdayCard(permit), "birthday-card"); return }
     const busy = bubbleEl.dataset.report === '1' || !!bubbleEl.dataset.remind || !!bubbleEl.dataset.inter ||
       bubbleEl.dataset.chatReply === '1' || bubbleEl.dataset.thinking === '1'
     if (busy) {
       // 被其他卡占用：压入队列，稍后自动补发
-      setTimeout(showBirthdayCard, 30000)
+      setTimeout(() => showBirthdayCard(), 30000)
       return
     }
     bubbleEl.innerHTML = ''
@@ -2430,24 +2498,15 @@
   ]
 
   function checkReunion() {
-    if (!P.lastExitTime) return // 首次运行没有退出记录，不算久别
+    if (!P.lastExitTime) return
     const today = dayKey(new Date())
-    if (P.lastReunionDate === today) return // 今天已打过招呼
-    // 按自然日差判断：上次退出那天 ≠ 今天，且间隔 ≥ 1 天
-    const exitD = new Date(P.lastExitTime)
-    const exitKey = dayKey(exitD)
-    if (exitKey === today) return // 当天退出当天打开，不算久别
-    P.lastReunionDate = today
-    saveState()
-    const n = Math.max(1, Math.round((Date.now() - P.lastExitTime) / 86400000))
-    const line = pick(REUNION_LINES).replace('第 N 天', '第 ' + n + ' 天')
-    setTimeout(() => {
-      const reunionToken = beginBubble('random-dialogue')
-      if (!reunionToken) return
-      say(line, 8000, 'random-dialogue', reunionToken)
-      setTimeout(() => { if (bubbleTokenValid(reunionToken)) endBubble(reunionToken) }, 8000)
-    }, 2500)
-    unlockPhoto('reunion-moment')
+    if (P.lastReunionDate === today || dayKey(new Date(P.lastExitTime)) === today) return
+    void runtimeNotify(execution => {
+      const n = Math.max(1, Math.round((Date.now() - P.lastExitTime) / 86400000))
+      const result = say(pick(REUNION_LINES).replace('第 N 天', '第 ' + n + ' 天'), 8000, 'ui', undefined, execution)
+      if (result.ok && result.displayed) { P.lastReunionDate = today; saveState(); unlockPhoto('reunion-moment') }
+      return result
+    }, 'reunion:' + today)
   }
 
   /* 日记素材文本。
@@ -2597,6 +2656,7 @@
   }
   /* P1MARK-END */
   function writeDiary(manual) {
+    if (window.pet.character?.authority) return renderDiary()
     const now = new Date()
     const day = diaryDayKey(now)
     if (diaryWriteInFlight.has(day)) return diaryWriteInFlight.get(day)
@@ -2756,6 +2816,18 @@ function maybeWriteDiary() {
   try { window.__deleteDiaryEntry = deleteDiaryEntry } catch (e) { /* 作用域免疫暴露（bind/UI 走 window 钩子） */ }
   async function renderDiary() {
     const wrap = $('diary-list')
+    if (window.pet.character?.authority) {
+      const result = await window.pet.character.read({ kind: 'diary' })
+      wrap.replaceChildren()
+      for (const day of result.days || []) for (const entry of day.entries) {
+        const card = document.createElement('article'), title = document.createElement('strong'), text = document.createElement('p')
+        title.textContent = day.date + ' · ' + entry.title
+        text.textContent = entry.body?.text || JSON.stringify(entry.body || {})
+        card.append(title, text); wrap.appendChild(card)
+      }
+      if (!wrap.children.length) wrap.textContent = '还没有可展示的经历。'
+      return
+    }
     if (!wrap) return
     const today = diaryDayKey(new Date())
     const hasToday = diaryExists(today)
@@ -2880,6 +2952,8 @@ function maybeWriteDiary() {
   /* ---------- <pet-command> 协议：回复里的 JSON 指令 ---------- */
 
   function applyPetCommands(text) {
+    return { ok: false, reason: "runtime_command_action_not_enabled", clean: String(text || ''), applied: [] }
+    /* Legacy free-text commands retained for reference, never executed. */
     if (!text) return { clean: text || '', applied: [] }
     const re = /<pet-command>([\s\S]*?)<\/pet-command>/g
     const applied = []
@@ -2923,6 +2997,7 @@ function maybeWriteDiary() {
   }
 
   function useItem(key) {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'use_item', item: key })
     if (!(P.inventory[key] > 0)) return
     const it = ITEMS[key]
     P.inventory[key] -= 1
@@ -2931,20 +3006,20 @@ function maybeWriteDiary() {
       if (r < 0.3) {
         const gain = 5 + Math.floor(Math.random() * 16)
         P.coins += gain
-        say('🎁 盲盒开出了 🪙 ×' + gain + '！', undefined, 'ui')
+        say('🎁 盲盒开出了 🪙 ×' + gain + '！', undefined, 'user-feedback')
       } else if (r < 0.6) {
         P.stats.satiety = clamp(P.stats.satiety + 15, 0, 100)
         P.stats.mood = clamp(P.stats.mood + 15, 0, 100)
         P.stats.energy = clamp(P.stats.energy + 15, 0, 100)
         setMood('happy', 10000)
-        say('🎁 开出了豪华大礼包，全属性 +15！', undefined, 'ui')
+        say('🎁 开出了豪华大礼包，全属性 +15！', undefined, 'user-feedback')
       } else if (r < 0.8) {
         const keys = ['satiety', 'mood', 'energy']
         const k = keys[Math.floor(Math.random() * keys.length)]
         P.stats[k] = clamp(P.stats[k] - 10, 0, 100)
-        say('🎁 盲盒里是……过期泡面，' + (k === 'satiety' ? '饱食' : k === 'mood' ? '心情' : '精力') + ' -10 😰', undefined, 'ui')
+        say('🎁 盲盒里是……过期泡面，' + (k === 'satiety' ? '饱食' : k === 'mood' ? '心情' : '精力') + ' -10 😰', undefined, 'user-feedback')
       } else {
-        say('🎁 谢谢惠顾～（下次一定）', undefined, 'ui')
+        say('🎁 谢谢惠顾～（下次一定）', undefined, 'user-feedback')
       }
       updateCoins()
       renderCare()
@@ -2970,7 +3045,7 @@ function maybeWriteDiary() {
     else if (key === 'toy') { setMood('happy', 10000); addHearts(3) }
     else if (key === 'hairpin' || key === 'flower' || key === 'bracelet' || key === 'brooch') { setMood('happy', 10000); addHearts(5) }
     else setMood('happy', 10000)
-    say(it.icon + ' ' + it.name + ' 用掉啦～', undefined, 'ui')
+    say(it.icon + ' ' + it.name + ' 用掉啦～', undefined, 'user-feedback')
     renderCare()
     saveState()
   }
@@ -3036,6 +3111,7 @@ function maybeWriteDiary() {
   }
 
   function buyItem(key) {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'buy', item: key })
     const it = ITEMS[key]
     if (P.coins < it.price) { say('金币不够啦，去 🎮 玩小游戏赚一点吧～', undefined, 'ui'); return }
     P.coins -= it.price
@@ -3762,17 +3838,14 @@ function maybeWriteDiary() {
   // 摸头互动已移除（1.1.15：点击触发会干扰拖拽手感）
 
   function feedIt() {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'feed' })
     if ((P.inventory.cookie || 0) > 0) {
       if (R.sleepy) wakeUp()
       P.inventory.cookie -= 1
       P.feedCount += 1
       P.stats.satiety = clamp(P.stats.satiety + 20, 0, 100)
       setMood('eating', 10000)
-      const feedToken = beginBubble('random-dialogue')
-      if (feedToken) {
-        say(pick(LINES.eat), 5000, 'random-dialogue', feedToken)
-        setTimeout(() => { if (bubbleTokenValid(feedToken)) endBubble(feedToken) }, 5000)
-      }
+      void runtimeNotify(execution => say(pick(LINES.eat), 5000, 'ui', undefined, execution), 'feed-feedback', 'user-feedback')
       renderCare()
       saveState()
       gainExp(1)
@@ -3819,7 +3892,7 @@ function maybeWriteDiary() {
     }
   })
 
-  function maybeRememberFromChat(text) {
+  function maybeRememberFromChat(text, execution) {
     try { noteOwnerReplyToProactive(text) } catch (e) { /* PC-3：降温只做记录，失败不得影响聊天 */ }
     if (!text || !window.MemoryEngine || typeof window.MemoryEngine.remember !== 'function') return
     const m = String(text).match(/(?:记住|请记住|记一下|别忘了|以后要|重要)[：:，,]?\s*(.+)/)
@@ -3828,7 +3901,7 @@ function maybeWriteDiary() {
     if (!content) return
     try {
       const r = window.MemoryEngine.remember(content, { type: 'fact', tags: ['chat'], ts: Date.now() })
-      if (r && r.ok) say('📌 记住啦，会作为重要记忆保存～', 3500, 'ui')
+      if (r && r.ok) say('📌 记住啦，会作为重要记忆保存～', 3500, execution ? 'ui' : 'user-feedback', undefined, execution)
     } catch (err) { /* ignore */ }
   }
 
@@ -3906,6 +3979,10 @@ function maybeWriteDiary() {
 
   function doHide() {
     R.hidden = true
+    roleRuntime.setVisible(false)
+    chatBusy = false; charcBusy = false; clearChatIndicator(); bubbleOwner = ''; bubbleSeq++
+    $('mini-chat-send').disabled = false
+    if ($('charc-send')) { $('charc-send').disabled = false; $('charc-send').textContent = '发送 ➤' }
     if (window.PetLife && window.PetLife.setVisibility) window.PetLife.setVisibility(false, Date.now()).catch(err => console.warn('[living] hide:', err.message))
     cancelIdleChain()
     if (window.AnimationPlayer) window.AnimationPlayer.pause()
@@ -3916,6 +3993,7 @@ function maybeWriteDiary() {
 
   function doShow() {
     R.hidden = false
+    roleRuntime.setVisible(true)
     if (window.PetLife && window.PetLife.setVisibility) window.PetLife.setVisibility(true, Date.now()).catch(err => console.warn('[living] show:', err.message))
     if (window.AnimationPlayer && window.AnimationPlayer.resume) window.AnimationPlayer.resume()
     if (R.mood === 'idle') armIdleChain()
@@ -3942,6 +4020,7 @@ function maybeWriteDiary() {
   }
 
   function openChat() {
+    roleRuntime.setConversationActive(true)
     ensureAudio()
     hidePhotoCard()
     if (bubbleEl.dataset.report !== '1' && bubbleEl.dataset.thinking !== '1' && bubbleEl.dataset.chatReply !== '1' && !bubbleEl.classList.contains('dp-bubble-interaction') && !bubbleEl.classList.contains('dp-bubble-remind')) clearSayBubble()
@@ -3957,6 +4036,7 @@ function maybeWriteDiary() {
   }
 
   function closeChat() {
+    roleRuntime.setConversationActive(false)
     // 汇报卡还在显示时先收起它，避免卡片挂在缩小后的窗口上
     if (bubbleEl.dataset.report === '1') hideReport()
     R.chatOpen = false
@@ -4067,6 +4147,7 @@ function maybeWriteDiary() {
   }
 
   function renderInterCard() {
+    roleRuntime.cancel("technical_request", event => event.origin === "automatic")
     if (pendingInter && !R.hidden) {
       animLockUntil = 0
       currentAnimName = null
@@ -4112,7 +4193,7 @@ function maybeWriteDiary() {
     } else {
       const title = document.createElement('div')
       title.className = 'dp-bubble-report-title'
-      title.textContent = '❓ ' + P.name + ' 想问你'
+      title.textContent = '❓ ' + '工作任务需要确认'
       bubbleEl.appendChild(title)
       ;(payload.questions || []).forEach((q) => {
         const qWrap = document.createElement('div')
@@ -4262,6 +4343,7 @@ function maybeWriteDiary() {
   }
 
   function renderReminderCard(data) {
+    roleRuntime.cancel("technical_reminder", event => event.origin === "automatic")
     bubbleEl.innerHTML = ''
     bubbleEl.dataset.remind = data.kind
     bubbleEl.className = 'dp-bubble dp-bubble-remind dp-remind-' + data.kind
@@ -4271,7 +4353,7 @@ function maybeWriteDiary() {
     const body = document.createElement('div')
     body.className = 'dp-remind-body'
     // 台词气泡：优先取该提醒组的自定义/官方台词，作为提醒的"开场白"
-    const line = pickRemindLine(data.kind)
+    const line = '' // Technical reminders have no independent character opening.
     body.textContent = line ? line + '\n' + data.text : data.text
     const foot = document.createElement('div')
     foot.className = 'dp-inter-foot'
@@ -4379,12 +4461,44 @@ function maybeWriteDiary() {
 
   /* 角色聊天的**唯一** AI 调用点（迷你输入与面板「💗 与小深说话」tab 共用 ⇒ 全仓 AI 调用点计数不变）。
      2026-09-25 用户裁定 B：面板新增角色聊天 tab 属于同一套聊天，**不新增第五个 AI 调用点**。 */
-  function characterChatRequest(payload) {
+  async function characterChatRequest(payload, execution) {
     if (characterRetryTurn && characterRetryTurn.messageRef) payload.messageRef = characterRetryTurn.messageRef
     rememberFromUserMessage(payload)
-    return (window.AIGateway && typeof window.AIGateway.request === 'function')
-      ? window.AIGateway.request(payload)
-      : Promise.resolve({ ok: false, reason: 'gateway_unavailable' })
+    const source = (payload.history || []).find(row => row.role === 'user' && row.messageRef === payload.messageRef)
+    const permit = roleRuntime.retainFacts(execution, source)
+    if (permit && window.pet.platform) {
+      const began = await window.pet.platform.extraction(source.messageRef)
+      if (!began || began.ok === false) { roleRuntime.completeFacts(permit); return { ok: false, reason: began && began.reason || 'extraction_checkpoint_failed' } }
+    }
+    let attached = false
+    if (permit) payload.onMetadata = promise => {
+      if (attached) return
+      attached = true
+      const expressionContinuation = execution.continueAs('metadata-expression')
+      promise.then(async metadata => {
+        if (!roleRuntime.isFactAuthorized(permit, source.messageRef) || !metadata || metadata.messageRef !== source.messageRef) return
+        if (window.pet.platform) await window.pet.platform.extraction(source.messageRef, { ok: metadata.ok !== false, reason: metadata.reason })
+        if (metadata.ok === false) throw Error(metadata.reason || 'metadata_failed')
+        const recorded = await window.PetLife.recordTurn({ runtimeFactExecution: permit, metadataOnly: true,
+          messageRef: source.messageRef, ts: source.ts, userText: source.text,
+          memory: metadata.memory, conversation: metadata.conversation,
+          replyTo: payload.context && payload.context.proactiveReplyTo })
+        if (recorded && recorded.ok === false) throw Error(recorded.reason || 'metadata_save_failed')
+        if (!roleRuntime.isFactAuthorized(permit, source.messageRef)) return
+        if (latestCharacterTurnRef === source.messageRef && Date.now() - source.ts < 10000 &&
+          !roleRuntime.snapshot().queued.some(turn => turn.kind === 'reply') && roleRuntime.continuation(expressionContinuation)) {
+          presentCharacterExpression({ conversation: metadata.conversation }, execution)
+        }
+        renderLivingNotebook()
+      }).catch(err => console.warn('[pet-life] metadata save failed:', err.message)).finally(() => {
+        roleRuntime.completeFacts(permit)
+        roleRuntime.completeContinuation(expressionContinuation)
+      })
+    }
+    try {
+      return window.AIGateway && typeof window.AIGateway.request === 'function'
+        ? await window.AIGateway.request(payload) : { ok: false, reason: 'gateway_unavailable' }
+    } finally { if (permit && !attached) roleRuntime.completeFacts(permit) }
   }
   /* A2：**用户自己说过的背景/偏好** ⇒ 交给既有记忆写入面
      （`MemoryEngine.processUserMessage`：规则版提及检测＋证据 messageRef＋去重/合并/状态，零 AI）。
@@ -4402,17 +4516,77 @@ function maybeWriteDiary() {
       if (hits.length) { try { console.log('memory-user-mention ' + JSON.stringify({ n: hits.length, actions: hits.map((x) => x.action) })) } catch (e2) { /* ignore */ } }
     } catch (err) { /* 记忆写入失败不影响聊天 */ }
   }
-  async function sendMiniChat() {
+  function applyKernelProjection(projection) {
+    if (!projection?.ok || !projection.state) return
+    const body = projection.state
+    kernelState.apply({ ...body.legacyUnmapped, ...body.preferences, ...body.nurture,
+      stats: { ...body.needs }, relationship: structuredClone(body.relationship), affection: body.relationship?.affection || 0 })
+    P.name = body.displayName || projection.displayName || P.name
+    const work = body.nurture?.work
+    R.workId = work?.id || null; R.workStart = work?.startedAt || 0
+    R.workEnd = work ? Date.now() + Math.max(0, (WORK_JOBS.find(job => job.id === work.id)?.minutes || 0) * 60000 - work.elapsedMs) : 0
+    restUntil = body.nurture?.rest ? Date.now() + body.nurture.rest.remainingMs : 0
+    restEndAt = restUntil
+    const timer = body.nurture?.focus
+    focus.kernelTimer = timer || null
+    focus.active = !!timer && !timer.paused
+    focus.remaining = timer ? Math.ceil(timer.remainingMs / 1000) : (focus.mode === 'study' ? 1500 : 300)
+    if (timer) focus.mode = timer.mode
+    focus.projectedAt = Date.now()
+    $('btn-focus').textContent = focus.active ? '暂停' : timer ? '继续专注 ⏱' : '开始专注 ⏱'
+    updateFocusClock(); updateFocusMeta()
+    renderCare(); updateCoins(); renderWorkList(); renderRestStatus()
+  }
+  async function submitKernelInteraction(payload) {
+    const result = await window.pet.character.submit({ kind: 'owner.interaction', payload })
+    if (!result?.ok) systemNotice('操作未完成：' + (result?.code || 'kernel_unavailable'), 5000, 'ui')
+    else {
+      applyKernelProjection(await window.pet.character.read())
+      const item = payload.kind === 'feed' ? 'cookie' : payload.kind === 'use_item' ? payload.item : null
+      if (item && ITEMS[item]?.category === 'meal') await window.pet.character.submit({ kind: 'owner.interaction', payload: { kind: 'animation', name: 'eat-snack' } })
+    }
+    return result
+  }
+  async function submitKernelChat(input) {
+    const text = input && input.value.trim()
+    if (!text) return { ok: false, reason: 'message_empty' }
+    const messageRef = window.MemoryMessageRef.next()
+    const result = await window.pet.character.submit({ commandId: 'owner:' + messageRef, kind: 'owner.message',
+      payload: { text, messageRef, ts: Date.now(), sessionId: 'desktop-chat', timezone: 'Asia/Shanghai' } })
+    if (result?.ok) { if (input.value.trim() === text) input.value = ''; refreshCharacterHistoryViews() }
+    else systemNotice('消息未送达：' + (result?.code || 'kernel_unavailable'), 6000, 'ui')
+    return result
+  }
+  if (window.pet.character?.authority) window.pet.character.onEvent(event => {
+    if (event?.kind === 'ready') window.pet.character.read().then(applyKernelProjection)
+    if (event?.kind === 'delta') {
+      applyKernelProjection(event.event?.projection)
+      refreshCharacterHistoryViews()
+      if (event.event?.kind === 'owner.reply' && event.event.detail?.outcome === 'failed') systemNotice('本次回复未完成，可稍后重试。', 6000, 'ui')
+    }
+  })
+  async function sendMiniChat(execution, submittedText) {
+    if (window.pet.character?.authority) return submitKernelChat($('mini-chat-input'))
+    if (!roleRuntime.isAuthorized(execution)) {
+      const input = $('mini-chat-input'), text = input.value.trim()
+      if (!text) return
+      input.value = ''
+      const result = await submitOwnerReply(text, permit => sendMiniChat(permit, text))
+      if (result && !result.ok && !result.cancelled && !result.committed && !input.value) input.value = text
+      return result
+    }
     const input = $('mini-chat-input')
-    const text = input.value.trim()
-    if (!text || chatBusy || charcBusy) return
+    const text = submittedText || input.value.trim()
+    if (!text) return
     const requestVersion = ++miniChatRequestVersion
+    characterUiExecutionId = execution.executionId
+    let actionResult = { ok: false, reason: "reply_incomplete" }
     livingPresence.user()
   Pace.onUser() /* P0-1 第二批：主人开口 ⇒ 连发计数复位 */
-    input.value = ''
+    if (!submittedText) input.value = ''
     chatBusy = true
-    const requestToken = beginBubble('character-chat')
-    if (!requestToken) { chatBusy = false; input.value = text; return }
+    const requestToken = beginBubble('character-chat', execution)
+    if (!requestToken) { chatBusy = false; if (!input.value) input.value = text; return { ok: false, reason: 'bubble_unavailable' } }
     characterChatActiveCount++
     cancelRandomTimer()
     $('mini-chat-send').disabled = true
@@ -4422,7 +4596,7 @@ function maybeWriteDiary() {
     // 聊天动画：发送后切"思考"，回复到达切"开心"，失败恢复待机
     if (!R.running && !R.dragging) setMood('chatting')
     try {
-      const history = await prepareCharacterTurn(text)
+      const history = await prepareCharacterTurn(text, execution)
       const aiContext = window.CharacterSnapshot && typeof window.CharacterSnapshot.toCharacterAIContext === 'function'
         ? window.CharacterSnapshot.toCharacterAIContext({ userText: text, history })
         : {}
@@ -4433,14 +4607,19 @@ function maybeWriteDiary() {
         const __aw = proactiveAwaitingReply
         if (__aw && __aw.id) aiContext.proactiveReplyTo = { instanceId: __aw.id, presentedAt: __aw.presentedAt, opening: proactiveOpeningText || '', explicit: __aw.explicit === true }
       } catch (err) { /* 取不到就不带 */ }
-      const r = (characterRetryTurn && characterRetryTurn.reply) || await characterChatRequest({ role: 'chat', userText: text, context: aiContext, history, timeoutMs: 90000, force: true, source: 'mini-chat' })
+      execution.assertCurrent()
+      const r = (characterRetryTurn && characterRetryTurn.reply) || await characterChatRequest({ role: 'chat', userText: text, context: aiContext, history, timeoutMs: 90000, force: true, source: 'mini-chat' }, execution)
+      execution.assertCurrent()
+      actionResult = { ok: !!(r && r.ok && r.text), reason: r && r.reason }
       const reply = r && r.ok ? r.text : null
       if (reply) {
-        await persistCharacterReply(text, r)
+        await persistCharacterReply(text, r, execution)
+        execution.assertCurrent()
+        actionResult.committed = true
         markDaily('chat')
-        maybeRememberFromChat(text)
+        maybeRememberFromChat(text, execution)
         addAffection(1)
-        presentCharacterExpression(r)
+        presentCharacterExpression(r, execution)
         // 被夸害羞：DSH 语义判断用户夸了小深 → 回复带 [PRAISED] 标记 → 解锁照片 + 害羞
         let finalReply = String(reply)
         let praised = false
@@ -4494,6 +4673,7 @@ function maybeWriteDiary() {
         const bubbleToken = requestToken
         if (Array.isArray(beats) && beats.length > 1) {
           const seqResult = await sayBeats(beats, bubbleToken)
+          if (!seqResult || seqResult.status !== 'completed') actionResult = { ok: false, committed: true, reason: seqResult && seqResult.reason || 'presentation_incomplete' }
           if (bubbleTokenValid(bubbleToken)) {
             if (seqResult && seqResult.status === 'completed') {
               bubbleEl.classList.add('dp-chat-reply')
@@ -4504,9 +4684,11 @@ function maybeWriteDiary() {
             }
           }
         } else {
-          chatSay(finalReply, undefined, 'character-chat', bubbleToken)
+          const presentation = chatSay(finalReply, undefined, 'character-chat', bubbleToken)
+          if (!presentation || !presentation.ok) actionResult = { ok: false, committed: true, reason: presentation && presentation.reason || 'presentation_failed' }
           if (bubbleTokenValid(bubbleToken)) endBubble(bubbleToken)
         }
+        execution.assertCurrent()
         if (praised) { setMood('happy', 12000); addHearts(3) }
         touch()
       } else if (r && r.reason === 'quota_exhausted') {
@@ -4532,17 +4714,21 @@ function maybeWriteDiary() {
       }
       if (!reply && !input.value) input.value = text
     } catch (err) {
+      actionResult = { ok: false, cancelled: !execution.isCurrent(), reason: err.code || err.message }
+      if (execution.isCurrent()) {
       clearChatIndicator()
       setMood('idle')
       if (!input.value) input.value = text
       say(characterChatFailureMessage(err && err.message), 6000, 'character-chat', requestToken)
+      }
     }
     if (typeof requestToken === 'number' && bubbleTokenValid(requestToken)) endBubble(requestToken)
     finishCharacterChat()
-    if (requestVersion === miniChatRequestVersion) {
+    if (requestVersion === miniChatRequestVersion && characterUiExecutionId === execution.executionId) {
       chatBusy = false
       $('mini-chat-send').disabled = false
     }
+    return actionResult
   }
 
   $('mini-chat-send').addEventListener('click', sendMiniChat)
@@ -4920,8 +5106,10 @@ function maybeWriteDiary() {
          与连点语义正好互补：连点是"戳她"，单次轻点是"摸摸头"。 */
       else if (P._clickCount === 1) unlockPhoto('head-pat')
       const c = window.BehaviorDirector.clickAnimation({ R, P, count: P._clickCount })
-      touch() // 点击桌宠 = 被理会
+      if (window.pet.character?.authority) void submitKernelInteraction({ kind: 'touch', gesture: 'pet_click' })
+      else touch() // 点击桌宠 = 被理会
       window.EventBus.emit('pet.clicked', { count: P._clickCount || 1, animation: c })
+      if (window.pet.character?.authority) { void submitKernelInteraction({ kind: 'animation', name: c }); return }
       petEl.classList.add('dp-click-anim') // 停用容器 bob 浮动/摇晃，避免与视频动画叠加
       // 播完一遍（ended）自动恢复：工作→工作动画；空闲→待机。不依赖固定 3s 定时器
       showAnim(c, 0, () => {
@@ -5133,6 +5321,7 @@ function maybeWriteDiary() {
   $('name-save').addEventListener('click', () => {
     const v = $('name-input').value.trim()
     if (!v) return
+    if (window.pet.character?.authority) { void window.pet.character.submit({ kind: 'identity.update', payload: { displayName: v } }).then(() => window.pet.character.read()).then(applyKernelProjection); return }
     P.name = v
     saveState()
     if (window.PersonaCore && window.PersonaCore.setDisplayName) window.PersonaCore.setDisplayName(v)
@@ -5683,302 +5872,8 @@ function maybeWriteDiary() {
     })
   }
 
-  /* CLEAN-STRIP:BEGIN update */
-  /* ---------- 更新检测（设置页） ---------- */
-
-  // 更新安装确认卡（渲染层自绘）：
-  // 桌宠窗口是 transparent+frame:false+alwaysOnTop，主进程 dialog.showMessageBox(win,...) 会不显示且挂起，
-  // 所以在渲染层用交互卡确认，确认后 updateInstall({confirmed:true}) 跳过主进程 dialog。
-  function confirmUpdateInstall(version) {
-    const busy = bubbleEl.dataset.report === '1' || !!bubbleEl.dataset.remind || !!bubbleEl.dataset.inter ||
-      bubbleEl.dataset.chatReply === '1' || bubbleEl.dataset.thinking === '1'
-    if (busy) {
-      say('先处理完当前卡片再安装更新哦～', undefined, 'ui')
-      return Promise.resolve(false)
-    }
-    return new Promise((resolve) => {
-      bubbleEl.innerHTML = ''
-      bubbleEl.dataset.report = ''
-      bubbleEl.className = 'dp-bubble dp-bubble-interaction'
-      stage.classList.add('dp-busy-bubble')
-      const title = document.createElement('div')
-      title.className = 'dp-bubble-report-title'
-      title.textContent = '🔄 确认更新'
-      const body = document.createElement('div')
-      body.className = 'dp-bubble-report-body'
-      body.textContent = '即将安装新版本 v' + version + '。\n安装过程会自动关闭桌宠，完成后自动重新打开。\n确认现在更新吗？'
-      const foot = document.createElement('div')
-      foot.className = 'dp-inter-foot'
-      const okBtn = document.createElement('button')
-      okBtn.className = 'dp-mini-btn'
-      okBtn.textContent = '✅ 立即更新'
-      const cancelBtn = document.createElement('button')
-      cancelBtn.className = 'dp-mini-btn'
-      cancelBtn.textContent = '取消'
-      const finish = (val) => {
-        bubbleEl.classList.add('hidden')
-        bubbleEl.innerHTML = ''
-        bubbleEl.className = 'dp-bubble'
-        stage.classList.remove('dp-busy-bubble')
-        resolve(val)
-      }
-      okBtn.addEventListener('click', () => finish(true))
-      cancelBtn.addEventListener('click', () => finish(false))
-      foot.appendChild(okBtn)
-      foot.appendChild(cancelBtn)
-      bubbleEl.appendChild(title)
-      bubbleEl.appendChild(body)
-      bubbleEl.appendChild(foot)
-      bubbleEl.classList.remove('hidden')
-    })
-  }
-
-  function setUpdateStatus(text) {
-    $('update-status').textContent = text
-    // 注意：不再清空 update-actions！按钮区由下载/安装流程自己管理，
-    // 否则 setUpdateStatus 会把刚绑定好 onclick 的按钮从 DOM 移除（1.1.23"点安装没反应"根因之一）
-  }
-
-  // 重置更新按钮区（开始新一轮检查时清空旧按钮）
-  function clearUpdateActions() {
-    $('update-actions').innerHTML = ''
-  }
-
-  /* ---------- P0-A：更新与兼容状态（只读展示，不做任何升级/切换动作） ---------- */
-  function ucFormatModel(m) {
-    if (!m) return '-'
-    const listed = m.listed === true ? '官方目录中' : (m.listed === false ? '不在官方目录' : '未探测')
-    const parts = [String(m.id || '-'), listed]
-    if (m.lifecycle && m.lifecycle !== 'unknown') parts.push(m.lifecycle)
-    if (m.recommended) parts.push('建议 ' + m.recommended)
-    return parts.join(' · ')
-  }
-
-  async function refreshUpdateCompatUI(force) {
-    const modelEl = $('uc-model')
-    const stEl = $('uc-status')
-if (!modelEl || !stEl) return
-    try {
-      if (force) {
-        try { await window.pet.ucModelStatus({ force: true }) } catch (err) { /* 只读探测失败不影响展示 */ }
-      }
-      const snap = await window.pet.ucStatusSnapshot()
-      if (!snap || !snap.ok) { stEl.textContent = '状态读取失败'; return }
-      const purposes = (snap.registry && snap.registry.purposes) || {}
-      /* 这里原来直接显示 registry 的**声明 ID**（合法但已下线的兼容别名），
-         会被读成"她在用 v4"。改为显示**实际生效**的模型：由主进程按白名单解析
-         （用户偏好 → 未设则跟随最新 Flash），并把别名路由关系如实写在名字后面。 */
-      const cv = await window.pet.chatModelGet().catch(() => null)
-      const effView = (cv && cv.ok)
-        ? { id: cv.effective, name: cv.effectiveName, lifecycle: cv.effectiveLifecycle }
-        : purposes.character
-      modelEl.textContent = ucFormatModel(effView)
-      const probe = snap.probe || {}
-      const last = (snap.usage && snap.usage.last && snap.usage.last.length) ? snap.usage.last[snap.usage.last.length - 1] : null
-      const probeText = probe.ok
-        ? ('已同步 ' + ((probe.listed && probe.listed.length) || 0) + ' 个 ID' + (probe.stale ? '（缓存过期）' : ''))
-        : ('未同步（' + (probe.error || '未探测') + '）')
-      const usageText = last ? ('最近一次：' + last.model + (last.ok ? ' 成功' : ' ' + (last.error || '失败'))) : null
-      const action = (purposes.character && purposes.character.actionRequired) || 'none'
-      const actionText = action === 'required' ? '需处理' : (action === 'recommended' ? '建议迁移' : '正常')
-      stEl.textContent = ['模型目录：' + probeText, usageText, '状态：' + actionText].filter(Boolean).join(' · ')
-    } catch (err) {
-      try { $('uc-status').textContent = '状态读取失败' } catch (e) { /* ignore */ }
-    }
-  }
-
-  if ($('btn-uc-refresh')) $('btn-uc-refresh').addEventListener('click', async () => {
-    const btn = $('btn-uc-refresh')
-    if (btn) btn.disabled = true
-    try { await refreshUpdateCompatUI(true) } finally { if (btn) btn.disabled = false }
-  })
-
-  /* ---------- 聊天模型选择器（设置页） ----------
-     设计口径（用户拍板）：默认跟随最新 Flash；可用显式选择覆盖；**绝不自动切到 Pro**
-     （Pro 只能由用户在这里自己选）。合法性判定在白名单（主进程），本函数只渲染。 */
-  let chatModelView = null
-
-  function chatModelLabel(m) {
-    const parts = []
-    if (m.following) parts.push('跟随最新 Flash（默认）')
-    const nm = m.effectiveName && m.effectiveName !== m.effective
-      ? (m.effectiveName + '（' + m.effective + '）')
-      : (m.effectiveName || m.effective || '-')
-    parts.push(nm)
-    const opt = (m.selectable || []).find((x) => x.id === m.effective)
-    if (m.effectiveLifecycle === 'alias') {
-      const tgt = opt && opt.recommendedTarget ? ('实际路由到 ' + opt.recommendedTarget) : '官方已下线该 ID'
-      parts.push('⚠ 该 ID 是兼容别名，' + tgt)
-    } else if (m.effectiveLifecycle === 'routed') {
-      parts.push('⚠ 官方已把该 ID 路由到 v4.1 Flash（按新单价计费），要恢复原档请改回默认')
-    }
-    if (!m.following) parts.push('已手动指定')
-    return parts.join(' · ')
-  }
-
-  /* ---------- C 档：打开设置页即**自动**按"你填的提供商"探测模型 ----------
-     用户口径：「不应该是根据自己配置的提供商与 api 自动探测改选项吗」。
-     策略：对话/日记任一视图刷新时触发一次；成功且 10 分钟内的探测不重复发；
-     失败则最多每 5 分钟重试一次。探测只影响"可选清单"，**绝不自动改你已选的模型**。 */
-  let autoProbe = { at: 0, failAt: 0, inFlight: false }
-  async function maybeAutoProbeModels(reason) {
-    if (!window.pet || typeof window.pet.modelProbe !== 'function') return
-    const now = Date.now()
-    if (autoProbe.inFlight) return
-    if (autoProbe.at && now - autoProbe.at < 10 * 60 * 1000) return
-    if (autoProbe.failAt && now - autoProbe.failAt < 5 * 60 * 1000) return
-    autoProbe.inFlight = true
-    try {
-      const r = await window.pet.modelProbe(false)
-      if (r && r.ok && (r.listed || []).length) autoProbe.at = now
-      else autoProbe.failAt = now
-      try { log('[model-probe] auto ' + (r && r.ok ? ('ok n=' + (r.listed || []).length) : ('failed ' + ((r && r.error) || 'unknown'))) + ' reason=' + (reason || '')) } catch (e) { /* ignore */ }
-    } catch (err) { autoProbe.failAt = now } finally { autoProbe.inFlight = false }
-  }
-
-  /* 共用：把可选模型灌进 datalist（输入框既能选也能手打） */
-  function fillModelDatalist(list) {
-    const dl = $('model-id-list')
-    if (!dl) return
-    dl.textContent = ''
-    ;(list || []).forEach((m) => {
-      const o = document.createElement('option')
-      o.value = m.id
-      dl.appendChild(o)
-    })
-  }
-  /* 共用：提交单档模型偏好（空 = 回默认） */
-  async function applyModelPref(purpose, id) {
-    if (purpose === 'character') return window.pet.chatModelSet(String(id || '').trim())
-    return window.pet.modelPrefSet(purpose, String(id || '').trim())
-  }
-
-  async function refreshChatModelUI(force) {
-    const sel = $('chat-model-select')
-    const hint = $('chat-model-hint')
-    if (!sel) return
-    try {
-      const view = await window.pet.chatModelGet()
-      if (!view || !view.ok) { if (hint) hint.textContent = '读取失败'; return }
-      chatModelView = view
-      fillModelDatalist(view.selectable || [])
-      /* 显式选择；留空表示用"默认模型"（不再是隐式的"跟随最新"） */
-      if (document.activeElement !== sel) sel.value = view.preference || ''
-      const def = view.effective || ''
-      sel.placeholder = '留空 = ' + (def || '默认模型')
-      if (hint) hint.textContent = view.preference ? ('当前：' + view.preference) : ('默认模型：' + def)
-      sel.disabled = false
-      if (force || !autoProbe.at) {
-        await maybeAutoProbeModels('chat')
-        if (autoProbe.at && !autoProbe.doneForceChat) { autoProbe.doneForceChat = true; return await refreshChatModelUI(false) }
-      }
-    } catch (err) { if (hint) hint.textContent = '读取失败' }
-  }
-
-  /* 聊天模型：输入框 + datalist（可手打自定义 ID），回车/失焦即保存 */
-  if ($('chat-model-select')) {
-    const el = $('chat-model-select')
-    const commitChat = async () => {
-      const v = String(el.value || '').trim()
-      try {
-        const r = await applyModelPref('character', v)
-        if (r && r.ok) say(v ? ('聊天模型已保存：' + v) : '聊天模型已恢复默认', undefined, 'ui')
-        else say('保存失败：' + ((r && r.error) || '未知错误'), undefined, 'ui')
-      } catch (err) { say('保存失败', undefined, 'ui') }
-      await refreshChatModelUI(true)
-    }
-    el.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') { e.preventDefault(); commitChat() } })
-    el.addEventListener('blur', () => { commitChat() })
-  }
-
-  /* ---------- M2：**按场景**选择模型 ----------
-     口径：模型 ID 单一来源仍是 model-registry.js；默认跟随最新 Flash（将来发布新 Flash 自动跟上）；
-     Pro 只能在这里手动选、**绝不自动接入**；合法性判定在主进程白名单，本函数只渲染 + 提交。
-     **只上架真有调用点的档**（聊天有独立选择器 ⇒ 这里只列日记）；expression/vision/work
-     没有真实调用点或由别处管理，一律不上架（不做假控件）。 */
-  const SCENE_LABELS = { character: '💬 聊天', diary: '📔 日记' }
-
-  function sceneModelRow(item, datalistId) {
-    const row = document.createElement('div')
-    row.className = 'dp-scene-row'
-    row.dataset.purpose = item.purpose
-    const label = document.createElement('span')
-    label.className = 'dp-scene-label'
-    label.textContent = SCENE_LABELS[item.purpose] || item.purpose
-    const input = document.createElement('input')
-    input.type = 'text'
-    input.className = 'dp-name-input dp-scene-input'
-    input.dataset.purpose = item.purpose
-    input.setAttribute('list', datalistId || 'model-id-list')
-    input.value = item.preference || ''
-    input.placeholder = '留空 = ' + (item.effective || '默认模型')
-    const hint = document.createElement('span')
-    hint.className = 'dp-scene-hint'
-    hint.textContent = item.preference ? '当前：' + item.preference : ''
-    const save = async () => {
-      const v = String(input.value || '').trim()
-      try {
-        const r = await applyModelPref(item.purpose, v)
-        if (r && r.ok) say((SCENE_LABELS[item.purpose] || item.purpose) + '模型已保存 ✅', undefined, 'ui')
-        else say('保存失败：' + ((r && r.error) || '未知错误'), undefined, 'ui')
-      } catch (err) { say('保存失败', undefined, 'ui') }
-      await refreshSceneModelUI()
-    }
-    input.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') { e.preventDefault(); save() } })
-    input.addEventListener('change', save)
-    input.addEventListener('blur', save)
-    row.appendChild(label)
-    row.appendChild(input)
-    row.appendChild(hint)
-    return row
-  }
-
-  async function refreshSceneModelUI() {
-    const box = $('scene-model-list')
-    if (!box) return
-    try {
-      const view = await window.pet.modelPrefGet()
-      if (!view || !view.ok) return
-      box.textContent = ''
-      /* 聊天档已有独立选择器（#chat-model-select）⇒ 这里只渲染其余可配置档（当前 = 日记） */
-      const rest = (view.purposes || []).filter((p) => p.purpose !== 'character')
-      rest.forEach((item) => box.appendChild(sceneModelRow(item, 'model-id-list')))
-      /* 清理由 A 档取代的旧控件：自定义模型 ID 现在就在输入框里（input+datalist），不再另起一行 */
-      try {
-        const stale = box.parentNode ? box.parentNode.querySelector('.dp-custom-model') : null
-        if (stale) stale.remove()
-      } catch (err) { /* ignore */ }
-      /* 自动探测（与聊天选择器共用节流；同一个 baseUrl 只探一次） */
-      if (!autoProbe.at && !autoProbe.failAt) {
-        const before = autoProbe.at
-        await maybeAutoProbeModels('scene')
-        if (!before && autoProbe.at) return await refreshSceneModelUI()
-      }
-    } catch (err) { /* 读取失败时保持原样，不伪造内容 */ }
-  }
-
-  if ($('scene-model-list')) $('scene-model-list').addEventListener('change', async (e) => {
-    const sel = e.target
-    if (!sel || !sel.classList || !sel.classList.contains('dp-scene-select')) return
-    const purpose = sel.dataset.purpose
-    const v = sel.value
-    sel.disabled = true
-    try {
-      const r = await window.pet.modelPrefSet(purpose, v)
-      if (!r || !r.ok) {
-        say('模型切换失败，已保持原设置', undefined, 'ui')
-      } else {
-        say((SCENE_LABELS[purpose] || purpose) + ' 模型已切换 ✅', undefined, 'ui')
-      }
-      await refreshSceneModelUI()
-      if (purpose === 'character') {
-        await refreshChatModelUI(true)
-        if (!isCleanEdition) await refreshUpdateCompatUI(false) /* CLEAN-STRIP:LINE */
-      }
-    } finally {
-      sel.disabled = false
-    }
-  })
+  async function refreshChatModelUI() { if (window.ModelSettings) await window.ModelSettings.refresh() }
+  async function refreshSceneModelUI() { if (window.ModelSettings) await window.ModelSettings.refresh() }
 
   /* ---------- U2：设置页分组 / 折叠 ----------
      实现口径：**不改 HTML 结构**（纯净版切片标记 / p1f 缩进断言 / id 契约全部保留），
@@ -6057,6 +5952,132 @@ if (!modelEl || !stEl) return
       })
     })
   }
+
+
+  /* CLEAN-STRIP:BEGIN update */
+  /* ---------- 更新检测（设置页） ---------- */
+
+  // 更新安装确认卡（渲染层自绘）：
+  // 桌宠窗口是 transparent+frame:false+alwaysOnTop，主进程 dialog.showMessageBox(win,...) 会不显示且挂起，
+  // 所以在渲染层用交互卡确认，确认后 updateInstall({confirmed:true}) 跳过主进程 dialog。
+  function confirmUpdateInstall(version) {
+    const busy = bubbleEl.dataset.report === '1' || !!bubbleEl.dataset.remind || !!bubbleEl.dataset.inter ||
+      bubbleEl.dataset.chatReply === '1' || bubbleEl.dataset.thinking === '1'
+    if (busy) {
+      say('先处理完当前卡片再安装更新哦～', undefined, 'ui')
+      return Promise.resolve(false)
+    }
+    return new Promise((resolve) => {
+      bubbleEl.innerHTML = ''
+      bubbleEl.dataset.report = ''
+      bubbleEl.className = 'dp-bubble dp-bubble-interaction'
+      stage.classList.add('dp-busy-bubble')
+      const title = document.createElement('div')
+      title.className = 'dp-bubble-report-title'
+      title.textContent = '🔄 确认更新'
+      const body = document.createElement('div')
+      body.className = 'dp-bubble-report-body'
+      body.textContent = '即将安装新版本 v' + version + '。\n安装过程会自动关闭桌宠，完成后自动重新打开。\n确认现在更新吗？'
+      const foot = document.createElement('div')
+      foot.className = 'dp-inter-foot'
+      const okBtn = document.createElement('button')
+      okBtn.className = 'dp-mini-btn'
+      okBtn.textContent = '✅ 立即更新'
+      const cancelBtn = document.createElement('button')
+      cancelBtn.className = 'dp-mini-btn'
+      cancelBtn.textContent = '取消'
+      const finish = (val) => {
+        bubbleEl.classList.add('hidden')
+        bubbleEl.innerHTML = ''
+        bubbleEl.className = 'dp-bubble'
+        stage.classList.remove('dp-busy-bubble')
+        resolve(val)
+      }
+      okBtn.addEventListener('click', () => finish(true))
+      cancelBtn.addEventListener('click', () => finish(false))
+      foot.appendChild(okBtn)
+      foot.appendChild(cancelBtn)
+      bubbleEl.appendChild(title)
+      bubbleEl.appendChild(body)
+      bubbleEl.appendChild(foot)
+      bubbleEl.classList.remove('hidden')
+    })
+  }
+
+  function setUpdateStatus(text) {
+    $('update-status').textContent = text
+    // 注意：不再清空 update-actions！按钮区由下载/安装流程自己管理，
+    // 否则 setUpdateStatus 会把刚绑定好 onclick 的按钮从 DOM 移除（1.1.23"点安装没反应"根因之一）
+  }
+
+  // 重置更新按钮区（开始新一轮检查时清空旧按钮）
+  function clearUpdateActions() {
+    $('update-actions').innerHTML = ''
+  }
+
+  /* ---------- P0-A：更新与兼容状态（只读展示，不做任何升级/切换动作） ---------- */
+  function ucFormatModel(m) {
+    if (!m) return '-'
+    const listed = m.listed === true ? '官方目录中' : (m.listed === false ? '不在官方目录' : '未探测')
+    const parts = [String(m.id || '-'), listed]
+    if (m.lifecycle && m.lifecycle !== 'unknown') parts.push(m.lifecycle)
+    if (m.recommended) parts.push('建议 ' + m.recommended)
+    return parts.join(' · ')
+  }
+
+  async function refreshUpdateCompatUI(force) {
+    const config = window.pet.modelConfig ? await window.pet.modelConfig.get().catch(() => null) : null
+    if (config && config.ok) {
+      const route = config.routes.character, provider = config.providers.find(p => p.id === route.effectiveProviderId)
+      if (provider && (provider.protocol !== 'openai' || !/^https:\/\/api\.deepseek\.com(?:\/v1)?$/.test(provider.baseUrl))) {
+        if ($('uc-model')) $('uc-model').textContent = route.effectiveModel || '未配置'
+        if ($('uc-status')) $('uc-status').textContent = '直连模型状态请在“模型与 API”中检测；本区仅用于 DSH / DeepSeek 兼容性。'
+        return
+      }
+    }
+    const modelEl = $('uc-model')
+    const stEl = $('uc-status')
+if (!modelEl || !stEl) return
+    try {
+      if (force) {
+        try { await window.pet.ucModelStatus({ force: true }) } catch (err) { /* 只读探测失败不影响展示 */ }
+      }
+      const snap = await window.pet.ucStatusSnapshot()
+      if (!snap || !snap.ok) { stEl.textContent = '状态读取失败'; return }
+      const purposes = (snap.registry && snap.registry.purposes) || {}
+      /* 这里原来直接显示 registry 的**声明 ID**（合法但已下线的兼容别名），
+         会被读成"她在用 v4"。改为显示**实际生效**的模型：由主进程按白名单解析
+         （用户偏好 → 未设则跟随最新 Flash），并把别名路由关系如实写在名字后面。 */
+      const cv = await window.pet.chatModelGet().catch(() => null)
+      const effView = (cv && cv.ok)
+        ? { id: cv.effective, name: cv.effectiveName, lifecycle: cv.effectiveLifecycle }
+        : purposes.character
+      modelEl.textContent = ucFormatModel(effView)
+      const probe = snap.probe || {}
+      const last = (snap.usage && snap.usage.last && snap.usage.last.length) ? snap.usage.last[snap.usage.last.length - 1] : null
+      const probeText = probe.ok
+        ? ('已同步 ' + ((probe.listed && probe.listed.length) || 0) + ' 个 ID' + (probe.stale ? '（缓存过期）' : ''))
+        : ('未同步（' + (probe.error || '未探测') + '）')
+      const usageText = last ? ('最近一次：' + last.model + (last.ok ? ' 成功' : ' ' + (last.error || '失败'))) : null
+      const action = (purposes.character && purposes.character.actionRequired) || 'none'
+      const actionText = action === 'required' ? '需处理' : (action === 'recommended' ? '建议迁移' : '正常')
+      stEl.textContent = ['模型目录：' + probeText, usageText, '状态：' + actionText].filter(Boolean).join(' · ')
+    } catch (err) {
+      try { $('uc-status').textContent = '状态读取失败' } catch (e) { /* ignore */ }
+    }
+  }
+
+  if ($('btn-uc-refresh')) $('btn-uc-refresh').addEventListener('click', async () => {
+    const btn = $('btn-uc-refresh')
+    if (btn) btn.disabled = true
+    try { await refreshUpdateCompatUI(true) } finally { if (btn) btn.disabled = false }
+  })
+
+  /* ---------- 聊天模型选择器（设置页） ----------
+     设计口径（用户拍板）：默认跟随最新 Flash；可用显式选择覆盖；**绝不自动切到 Pro**
+     （Pro 只能由用户在这里自己选）。合法性判定在白名单（主进程），本函数只渲染。 */
+  let chatModelView = null
+
 
   async function updateCheckUI(manual) {
     const btn = $('btn-update-check')
@@ -6206,7 +6227,9 @@ if (!modelEl || !stEl) return
   let harnessSeedDone = false
   /* 接入失败原因 → 人话（键来自 official-harness.attach() 的 reason 枚举） */
   const HARNESS_WHY = {
-    desktop_offline: '桌面端未启动',
+    desktop_offline: '尚未发现可用的桌面端服务',
+    authentication_failed: '桌面端认证未通过，将重新检测',
+    protocol_unavailable: '桌面端协议暂不可用，将重新检测',
     credentials_missing: '找不到凭据文件',
     record_absent: '凭据里没有会话记录',
     secret_absent: '凭据里没有签名密钥',
@@ -6226,10 +6249,11 @@ if (!modelEl || !stEl) return
       const h = (st && st.harness) || {}
       const parts = []
       if (o.unavailable) parts.push('（' + o.edition + ' 版不提供）')
-      else if (!o.installed) parts.push('❌ 未检测到官方 DeepSeek Harness')
+      else if (!o.installed && (h.usable || o.running || o.endpointOnline)) parts.push('DSH 正在运行（安装位置未确认）')
+      else if (!o.installed) parts.push('未检测到正在运行的 DSH；安装位置未确认')
       else parts.push('已安装 v' + (o.version || '?'))
       if (h.usable) parts.push('已接入 ✅')
-      else if (o.unavailable || !o.installed) parts.push('未接入')
+      else if (o.unavailable) parts.push('未接入')
       else {
         const why = (h.attachFail && h.attachFail.why) || null
         parts.push('未接入' + (why ? '（' + (HARNESS_WHY[why] || why) + '）' : ''))
@@ -6240,18 +6264,20 @@ if (!modelEl || !stEl) return
       const seg = []
       if (h.endpoint) seg.push(String(h.endpoint).replace(/^https?:\/\//, ''))
       if (o.running) seg.push('Desktop 在跑')
-      else if (o.installed && o.port19387 === false) seg.push('19387 无响应')
+      if (!h.usable && !o.endpointOnline && (o.installed || o.running)) seg.push('服务尚未就绪，自动重试中')
       if (w && !w.error && typeof w.total === 'number') seg.push('任务 ' + ((w.running || []).length) + '/' + w.total)
       if (det) det.textContent = seg.join(' · ')
       /* 感知：共享会话库里 running 任务消失 → 完成提醒（自有当前会话由既有汇报卡链负责，此处不重复） */
       const running = new Set(((st && st.work && st.work.running) || []))
-      if (harnessSeedDone) {
+      if (harnessSeedDone && h.usable && w && !w.error) {
         for (const id of harnessRunningSeen) {
           if (!running.has(id) && id !== R.currentId) { say('有任务完成啦～', 5000, 'ui'); playDing('report'); break }
         }
       }
-      harnessRunningSeen = running
-      harnessSeedDone = true
+      if (h.usable && w && !w.error) {
+        harnessRunningSeen = running
+        harnessSeedDone = true
+      }
     } catch (e) { /* 检测失败不影响其他功能 */ }
   }
   if ($('btn-harness-ensure')) $('btn-harness-ensure').addEventListener('click', async () => {
@@ -6293,44 +6319,6 @@ if (!modelEl || !stEl) return
     })
   }
 
-  /* U4：API 配置与主动参数（主进程 pet-prefs.json 持久化） */
-  const apiBaseEl = $('api-base-url'), apiKeyEl = $('api-key'), chatModelEl = $('chat-model-select')
-  let apiHasKey = false
-  function showApiConfig(c, prefix) {
-    if (!c) return
-    apiHasKey = !!c.hasKey
-    apiBaseEl.value = c.baseUrl || ''
-    if (chatModelEl) {
-      chatModelEl.value = c.model || (c.effectiveModel && c.effectiveModel !== '未配置' ? c.effectiveModel : '')
-      if (window.pet.chatModelSet) window.pet.chatModelSet(chatModelEl.value)
-    }
-    apiKeyEl.value = ''
-    apiKeyEl.placeholder = c.hasKey ? '已保存；留空不改' : '输入 API Key'
-    const source = c.keySource === 'settings' ? '本页 Key' : c.keySource === 'legacy' ? '共享凭据' : '未配置 Key'
-    $('api-hint').textContent = (prefix || '') + source
-    $('api-clear-key').disabled = !c.hasKey
-  }
-  if (apiBaseEl && window.pet.llmApi) {
-    window.pet.llmApi.get().then(c => showApiConfig(c)).catch(() => { $('api-hint').textContent = 'API 配置读取失败，请重开设置重试' })
-    const saveApi = async (patch) => {
-      $('api-save').disabled = true
-      $('api-clear-key').disabled = true
-      try {
-        const r = await window.pet.llmApi.set(patch)
-        if (!r || !r.ok) {
-          const errors = { invalid_base_url: 'API 地址需为有效 http(s) 地址，不含账号、查询参数或片段', invalid_model: '模型 ID 不能含空白且最长 128 字符' }
-          $('api-hint').textContent = errors[r && r.error] || '保存失败，原配置保留'
-          return
-        }
-        showApiConfig(r.view, '已保存，下次请求生效。')
-        refreshChatModelUI(false)
-        refreshSceneModelUI()
-      } catch (err) { $('api-hint').textContent = '保存失败，原配置保留' }
-      finally { $('api-save').disabled = false; $('api-clear-key').disabled = !apiHasKey }
-    }
-    $('api-save').addEventListener('click', () => saveApi({ baseUrl: apiBaseEl.value.trim(), apiKey: apiKeyEl.value.trim(), model: (chatModelEl ? chatModelEl.value.trim() : '') }))
-    $('api-clear-key').addEventListener('click', () => saveApi({ clearKey: true }))
-  }
   const pqFrom = $('proactive-quiet-from'), pqTo = $('proactive-quiet-to')
   const pCap = $('proactive-daily-cap'), pIv = $('proactive-min-interval')
   if (pqFrom && window.pet.proactiveTuning) {
@@ -6476,6 +6464,7 @@ if (!modelEl || !stEl) return
             onClick: () => {
               clearReminderCard()
               const t = dayKey(new Date())
+              if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'water_drink' })
               P.waterToday = (P.waterDay === t ? P.waterToday : 0) + 1
               P.waterDay = t
               P.stats.mood = clamp(P.stats.mood + 2, 0, 100)
@@ -6563,7 +6552,8 @@ if (!modelEl || !stEl) return
      链路复用既有正规通道，不新增 intent kind、不新增动画资源：
        intentSnap → BehaviorDirector.planForIntent → ExpressionEngine.createPlan → showAnim
      安全：正在播一次性动画（animLockUntil）时不打断；任一环缺失即降级返回，不影响台词。 */
-  function perceptionExpress(plan, intentKind) {
+  function perceptionExpress(plan, intentKind, execution) {
+    if (!roleRuntime.isAuthorized(execution)) return { ok: false, reason: "runtime_authorization_required" }
     if (!intentKind) return { ok: false, reason: 'no_intent_map' }
     if (animLockUntil && Date.now() < animLockUntil) return { ok: false, reason: 'anim_busy' }
     if (!window.BehaviorDirector || !window.ExpressionEngine) return { ok: false, reason: 'no_expression_engine' }
@@ -6588,7 +6578,7 @@ if (!modelEl || !stEl) return
       source: 'expression',
       priority: 60,
       interruptible: true,
-      reason: 'perception-express',
+      reason: 'perception-express', runtimeExecution: execution,
     })
     return { ok: true, candidate: cand, requestId: expr.requestId, intent: intentKind }
   }
@@ -6621,10 +6611,17 @@ if (!modelEl || !stEl) return
   }
 
   function startPerception() {
+    if (window.pet.character?.authority) return
     const pipe = perceptionPipeline()
     if (!pipe || typeof pipe.start !== 'function') return
     // P3/P4：把宿主能力注入 ctx（Writer 是唯一执行层，仍由它决定怎么用）
     pipe.start(P, {
+      requestExpression: (plan, intentKind) => runtimeNotify(execution => {
+        const line = perceptionPickLine(plan)
+        if (!line) return { ok: false, reason: 'no_line' }
+        perceptionExpress(plan, intentKind, execution)
+        return say(line, 5000, 'ui', undefined, execution)
+      }, 'perception-expression'),
       say: say,
       pickLine: perceptionPickLine,
       diaryEvent: diaryEvent,
@@ -6803,6 +6800,7 @@ if (!modelEl || !stEl) return
     $('guess-input').value = ''
     guess.left -= 1
     if (v === guess.target) {
+      if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'guess', score: 1, won: true })
       guess.over = true
       P.coins += 10
       gainExp(5)
@@ -6818,6 +6816,7 @@ if (!modelEl || !stEl) return
       unlockPhoto('guess-win')
       markGameWin2('guess')
     } else if (guess.left <= 0) {
+      if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'guess', score: 0, won: false })
       guess.over = true
       P.totalGames += 1
       saveState()
@@ -6884,6 +6883,7 @@ if (!modelEl || !stEl) return
   }
 
   function tttEnd(winner) {
+    if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'ttt', score: winner === 'X' ? 1 : 0, won: winner === 'X', draw: winner === null })
     ttt.over = true
     P.totalGames += 1
     let reward = 0
@@ -6896,7 +6896,7 @@ if (!modelEl || !stEl) return
     renderCare()
     const res = $('ttt-result')
     res.classList.remove('hidden')
-    res.textContent = winner === 'X' ? '🎉 你赢了！+10 🪙' : winner === 'O' ? '🤖 ' + P.name + '赢了，再来一局！' : '🤝 平局，+2 🪙'
+    res.textContent = winner === 'X' ? '🎉 你赢了！+10 🪙' : winner === 'O' ? '电脑获胜' : '🤝 平局，+2 🪙'
     renderTtt()
   }
 
@@ -7051,6 +7051,7 @@ if (!modelEl || !stEl) return
   }
 
   function sudokuWin() {
+    if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'sudoku', score: 1, won: true, level: sudoku.level })
     const lv = SUDOKU_LEVELS[sudoku.level] || SUDOKU_LEVELS.easy
     sudoku.over = true
     P.coins += lv.reward
@@ -7204,10 +7205,12 @@ if (!modelEl || !stEl) return
       unlockPhoto('gomoku-win')
       markGameWin2('gomoku')
     } else if (winner === 'white') {
-      res.textContent = '🤖 我赢了，再来一局？'
+      if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'gomoku', score: 0, won: false })
+      res.textContent = '电脑获胜'
     } else {
       P.coins += 5
       saveState(); updateCoins()
+      if (window.pet.character?.authority) window.GameBridge.complete({ gameId: 'gomoku', score: 0, won: false, draw: true })
       res.textContent = '🤝 平局 +🪙 5'
     }
     renderGomoku()
@@ -7258,16 +7261,24 @@ if (!modelEl || !stEl) return
     updateFocusClock()
     $('focus-study').classList.toggle('dp-level-active', m === 'study')
     $('focus-break').classList.toggle('dp-level-active', m === 'break')
-    if (!silent) say(m === 'study' ? '切换到学习模式，加油！' : '切换到休息模式，放松一下～', undefined, 'ui')
+    if (!silent) say(m === 'study' ? '切换到学习模式，加油！' : '切换到休息模式，放松一下～', undefined, 'user-feedback')
   }
 
   function focusTick() {
+    if (window.pet.character?.authority) {
+      if (focus.kernelTimer) focus.remaining = Math.max(0, Math.ceil((focus.kernelTimer.remainingMs - (focus.active ? Date.now() - focus.projectedAt : 0)) / 1000))
+      updateFocusClock(); return
+    }
     focus.remaining -= 1
     updateFocusClock()
     if (focus.remaining <= 0) focusComplete()
   }
 
   function startFocus() {
+    if (window.pet.character?.authority) {
+      if (!focus.timerInt) focus.timerInt = setInterval(focusTick, 1000)
+      return submitKernelInteraction({ kind: focus.kernelTimer?.paused && focus.kernelTimer.mode === focus.mode ? 'focus_resume' : 'focus_start', mode: focus.mode })
+    }
     if (focus.active) return
     focus.active = true
     focus.timerInt = setInterval(focusTick, 1000)
@@ -7275,12 +7286,14 @@ if (!modelEl || !stEl) return
   }
 
   function pauseFocus() {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'focus_pause' })
     if (focus.timerInt) { clearInterval(focus.timerInt); focus.timerInt = null }
     focus.active = false
     $('btn-focus').textContent = '继续专注 ⏱'
   }
 
   function focusComplete() {
+    if (window.pet.character?.authority) return
     if (focus.timerInt) { clearInterval(focus.timerInt); focus.timerInt = null }
     focus.active = false
     $('btn-focus').textContent = '开始专注 ⏱'
@@ -7464,6 +7477,7 @@ if (!modelEl || !stEl) return
         window.pet.proactiveSetEnabled(v).then((r) => {
           if (!r || r.ok !== true) throw new Error('setting_failed')
           proactiveOn = !!(r && r.enabled)
+          if (!proactiveOn) roleRuntime.cancel("proactive_disabled", event => event.kind === "opportunity")
           if (!proactiveOn) { proactivePresentationEpoch++; proactiveHideCard() }
           proactiveCb.checked = proactiveOn
           say(proactiveOn ? '💬 主动联系已开启，我偶尔会来找你聊聊～' : '💬 主动联系已关闭，我不会再主动出现啦', undefined, 'ui')
@@ -7485,7 +7499,15 @@ if (!modelEl || !stEl) return
      UI 不再暴露第二颗开关。 */
   const perceptionCb = $('perception-enabled')
   if (perceptionCb) {
+    if (window.pet.character?.authority) window.pet.character.perception().then(result => { if (result.ok) perceptionCb.checked = result.enabled })
     perceptionCb.addEventListener('change', () => {
+      if (window.pet.character?.authority) {
+        void window.pet.character.perception(!!perceptionCb.checked).then(result => {
+          if (result.ok) perceptionCb.checked = result.enabled
+          else systemNotice('感知设置未保存：' + result.reason, 5000, 'ui')
+        })
+        return
+      }
       const pipe = perceptionPipeline()
       if (pipe && typeof pipe.ensureState === 'function') pipe.ensureState(P)
       if (!P.perceptionConfig) P.perceptionConfig = { enabled: false, intervalMs: 30000, confidenceMin: 0.5 }
@@ -7656,13 +7678,14 @@ if (!modelEl || !stEl) return
   let restEndAt = 0
 
   function startRest() {
-    if (R.workId) { say('工作中，先结束工作再休息哦～', undefined, 'ui'); return }
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'rest_start', minutes: Number($('rest-min').value) || 10 })
+    if (R.workId) { say('工作中，先结束工作再休息哦～', undefined, 'user-feedback'); return }
     if (restTimer) { clearInterval(restTimer); restTimer = null }
     const mins = Number($('rest-min').value) || 10
     restUntil = Date.now() + mins * 60000
     restEndAt = restUntil
     setMood('sleepy')
-    say('😴 我要休息 ' + mins + ' 分钟啦，醒来会更精神～', 4000, 'ui')
+    say('😴 我要休息 ' + mins + ' 分钟啦，醒来会更精神～', 4000, 'user-feedback')
     renderRestStatus()
     // 休息期间心情/精力恢复已由主循环处理（休息时自然消耗停止）
     restTimer = setInterval(() => {
@@ -7676,11 +7699,12 @@ if (!modelEl || !stEl) return
     restUntil = 0
     restEndAt = 0
     setMood('idle')
-    say('😊 休息结束，精神满满！', 3500, 'ui')
+    say('😊 休息结束，精神满满！', 3500, 'user-feedback')
     renderRestStatus()
   }
 
   function cancelRest() {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'rest_cancel' })
     if (restTimer) { clearInterval(restTimer); restTimer = null }
     restUntil = 0
     restEndAt = 0
@@ -7708,53 +7732,7 @@ if (!modelEl || !stEl) return
   /* ---------- 工作：挂机赚金币 ---------- */
   // 女仆职责映射（参考百科：打扫/泡茶/整理/园艺/烹饪/洗衣/缝纫等），
   // 每份工作独立设定：时长 / 基础酬劳 / 状态消耗速率 / 解锁条件
-  const WORK_JOBS = [
-    {
-      id: 'clean', name: '打扫房间', icon: '🧹', minutes: 10, reward: 15,
-      desc: '把桌面擦得闪闪发亮，扫除灰尘和烦恼',
-      consume: { energy: 0.8 }, minLevel: 1, minAff: 0,
-    },
-    {
-      id: 'tea', name: '泡茶待客', icon: '☕', minutes: 15, reward: 20,
-      desc: '沏一壶好茶，招待来访的客人（还有自己）',
-      consume: { thirst: 0.9, mood: -0.2 }, minLevel: 1, minAff: 0,
-    },
-    {
-      id: 'tidy', name: '整理书房', icon: '📚', minutes: 20, reward: 28,
-      desc: '把书本按高矮排好，给主人的桌面腾出空间',
-      consume: { energy: 0.9, satiety: 0.3 }, minLevel: 2, minAff: 0,
-    },
-    {
-      id: 'garden', name: '庭院园艺', icon: '🌿', minutes: 30, reward: 40,
-      desc: '给窗台上的小花浇水、松土、修剪',
-      consume: { satiety: 0.7, thirst: 0.6 }, minLevel: 4, minAff: 10,
-    },
-    {
-      id: 'cook', name: '烹饪大餐', icon: '🍳', minutes: 45, reward: 60,
-      desc: '煎一份鲸鱼娘特制松饼，香气飘满整个桌面',
-      consume: { satiety: 0.8, energy: 0.6 }, minLevel: 6, minAff: 30,
-    },
-    {
-      id: 'laundry', name: '洗衣熨烫', icon: '👕', minutes: 25, reward: 35,
-      desc: '把衣物洗得香喷喷，再一件件熨平',
-      consume: { energy: 0.8, thirst: 0.4 }, minLevel: 3, minAff: 0,
-    },
-    {
-      id: 'sew', name: '缝纫修补', icon: '🧵', minutes: 30, reward: 42,
-      desc: '针线在指尖翻飞，补好主人心爱的衣物',
-      consume: { energy: 0.7, mood: -0.3 }, minLevel: 0, minAff: 50,
-    },
-    {
-      id: 'shop', name: '采购跑腿', icon: '🛒', minutes: 40, reward: 55,
-      desc: '出门采买新鲜的食材和日用品',
-      consume: { satiety: 0.7, energy: 0.7 }, minLevel: 5, minAff: 0,
-    },
-    {
-      id: 'petcare', name: '照顾宠物', icon: '🐾', minutes: 20, reward: 30,
-      desc: '给毛茸茸的小伙伴喂食、梳毛、陪玩',
-      consume: { mood: -0.4, energy: 0.3 }, minLevel: 0, minAff: 75,
-    },
-  ]
+  const WORK_JOBS = window.NurtureRules.WORK_JOBS
   const WORK_STAT_NAMES = { satiety: '饱食', mood: '心情', energy: '精力', thirst: '口渴' }
 
   // 收益公式：基础酬劳 ×（1 + 等级加成 + 好感度档加成 + 心情加成）
@@ -7873,21 +7851,22 @@ if (!modelEl || !stEl) return
   }
 
   function startWork(id) {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'work_start', id })
     if (R.workId) return
     // 工作与聊天面板完全独立：不需要先收起聊天；工作中打开/收起聊天也不影响工作
-    if (restUntil > Date.now()) { say('正在休息中，先结束休息再开始工作哦～', undefined, 'ui'); return }
+    if (restUntil > Date.now()) { say('正在休息中，先结束休息再开始工作哦～', undefined, 'user-feedback'); return }
     const job = WORK_JOBS.find((j) => j.id === id)
     if (!job) return
-    if ((P.level || 1) < job.minLevel || (P.affection || 0) < job.minAff) { say('🔒 等级或好感度不够，还做不了这份工作～', undefined, 'ui'); return }
+    if ((P.level || 1) < job.minLevel || (P.affection || 0) < job.minAff) { say('🔒 等级或好感度不够，还做不了这份工作～', undefined, 'user-feedback'); return }
     const block = workBlockReason(job)
-    if (block) { say(block, undefined, 'ui'); return }
+    if (block) { say(block, undefined, 'user-feedback'); return }
     R.workId = id
     R.workStart = Date.now()
     R.workEnd = R.workStart + job.minutes * 60000
     setMood('working')
     // 工作中动画：以写代码为主（80%），偶尔碎碎念（20%）
     playAnim(Math.random() < 0.8 ? 'work-code' : 'work-think')
-    say(job.icon + ' 开工！' + job.name + ' ' + job.minutes + ' 分钟，完成可得 🪙 ' + workReward(job) + '～', 4000, 'ui')
+    say(job.icon + ' 开工！' + job.name + ' ' + job.minutes + ' 分钟，完成可得 🪙 ' + workReward(job) + '～', 4000, 'user-feedback')
     renderWorkList()
     renderCare()
     // 工作中每 5 秒刷新进度 + 消耗状态；结算由主循环 60s tick 判定
@@ -7905,6 +7884,7 @@ if (!modelEl || !stEl) return
      不足 1 分钟 = 取消（不计次数、不发币、不写日志），保证"次数类成就"只能靠真实工作拿到。 */
   const MIN_WORK_SETTLE_MS = 60 * 1000
   function cancelWork() {
+    if (window.pet.character?.authority) return submitKernelInteraction({ kind: 'work_cancel' })
     if (!R.workId) return
     const job = WORK_JOBS.find((j) => j.id === R.workId)
     if (!job) { finishWorkUI(); return }
@@ -7942,7 +7922,7 @@ if (!modelEl || !stEl) return
     touch() // 完成工作 = 有陪伴互动
     renderWorkList()
     renderWorkLog()
-    say(job.icon + ' ' + (early ? '提前收工' : '完成') + '！' + job.name + ' 赚了 🪙 ' + coins + (early ? '（提前结束按比例结算）' : '') + '～', 5000, 'ui')
+    say(job.icon + ' ' + (early ? '提前收工' : '完成') + '！' + job.name + ' 赚了 🪙 ' + coins + (early ? '（提前结束按比例结算）' : '') + '～', 5000, 'user-feedback')
     // 状态消耗由主循环在 workEnd 前逐分钟扣减；此处只补最后不足一分钟的零头
     checkAchievements()
     unlockPhoto('first-day')
@@ -8077,6 +8057,7 @@ if (!modelEl || !stEl) return
   }
 
   function scheduleNextLine() {
+    return // Runtime opportunities replace the old independent dialogue timer.
     if (lineTimer) clearTimeout(lineTimer)
     lineTimer = setTimeout(() => {
       lineTimer = null
@@ -8195,7 +8176,7 @@ if (!modelEl || !stEl) return
   // model sentence or a scheduled intention, and do not create owner memories.
   if (window.EventBus) {
     window.EventBus.on('game.completed', ev => {
-      if (window.PetLife && window.PetLife.recordEvent) window.PetLife.recordEvent({ type: 'game.completed', eventId: 'game:' + livingSessionId + ':' + ev.gameId + ':' + ev.ts, ts: ev.ts || Date.now(), game: { gameId: ev.gameId, score: ev.score, won: ev.won } }).then(renderLivingNotebook).catch(err => console.warn('[living] game receipt:', err.message))
+      if (window.PetLife && window.PetLife.recordEvent) window.PetLife.recordEvent({ type: 'game.completed', eventId: ev.eventId || ('game:' + livingSessionId + ':' + ev.gameId + ':' + ev.ts), ts: ev.ts || Date.now(), game: { gameId: ev.gameId, score: ev.score, won: ev.won, draw: ev.draw, level: ev.level, elapsedSeconds: ev.elapsedSeconds } }).then(renderLivingNotebook).catch(err => console.warn('[living] game receipt:', err.message))
     })
     window.EventBus.on('pet.work.completed', ev => {
       if (window.PetLife && window.PetLife.recordEvent) window.PetLife.recordEvent({ type: 'work.completed', eventId: ev.runId || ('work:' + livingSessionId + ':' + ev.jobId + ':' + ev.ts), ts: ev.ts || Date.now(), text: '完成了桌宠工作：' + (ev.jobName || ev.jobId), refs: ['work:' + ev.jobId] }).then(renderLivingNotebook).catch(err => console.warn('[living] work receipt:', err.message))
@@ -8213,6 +8194,7 @@ if (!modelEl || !stEl) return
   window.MemorySystem.bind({ addMemory: (c) => window.MemoryEngine ? window.MemoryEngine.addCandidate(c) : null })
 
   loadState().then(() => {
+    if (window.pet.character?.authority) { refreshAllUI(); return }
     // 状态就绪：先跑会改动状态/数值的日常检查（生日加成、久别重逢），再统一刷新全部 UI
     ensureDaySnapshot()
     checkReunion()
@@ -8237,6 +8219,7 @@ if (!modelEl || !stEl) return
       if (pcb && window.pet && window.pet.proactiveGetEnabled) {
         window.pet.proactiveGetEnabled().then((r) => {
           proactiveOn = !!(r && r.enabled)
+          if (!proactiveOn) roleRuntime.cancel("proactive_disabled", event => event.kind === "opportunity")
           pcb.checked = proactiveOn
         }).catch(() => { pcb.checked = proactiveOn })
       }
@@ -8277,11 +8260,12 @@ if (!modelEl || !stEl) return
   renderShop()
   /* P4-P1：Harness 状态首轮刷新 + 30s 周期；未检测到官方 Desktop 时开机提示一次 */
   refreshHarnessStatusUI()
+  if (window.pet.onHarnessChanged) window.pet.onHarnessChanged(refreshHarnessStatusUI)
   setInterval(refreshHarnessStatusUI, 30000)
   setTimeout(() => {
     try {
       const el = $('harness-status')
-      if (el && el.textContent.indexOf('未检测到') >= 0) say('没找到官方 DeepSeek Harness，安装后我才能派活哦～', 7000, 'ui')
+      if (el && el.textContent.indexOf('未检测到') >= 0) systemNotice('没找到官方 DeepSeek Harness，安装后我才能派活哦～', 7000, 'ui')
     } catch (e) { /* ignore */ }
   }, 9000)
   // 商店分类切换（用独立常量，避免数组字面量在语句位置被解析歧义）
@@ -8305,7 +8289,7 @@ if (!modelEl || !stEl) return
   /* CLEAN-STRIP:BEGIN test */
   /* ---------- 自动验证钩子（verify-visual.js 用；控制状态/模拟鼠标/读取 UI） ---------- */
 
-  window.__petTest = {
+  const legacyPetTest = {
     presentContactTest: async ({ id, candidateId, opening, ts }) => { await window.PetLife.presented({ instanceId: id, candidateId, opening, ts, form: 'question' }); await proactiveShowCard(opening, id); return true },
     setMood: (m, ms) => setMood(m, ms),
     playAnim: (mood) => playAnim(mood),
@@ -8436,6 +8420,9 @@ if (!modelEl || !stEl) return
     // 每日任务全完成（daily-summary）：走真实 markDaily 路径（ensureDaily 重置后依次完成）
     dailyAllTest: () => { P.daily = { date: '2000-01-01', tasks: [], signStreak: 0, lastSign: '' }; saveState(); markDaily('chat'); markDaily('game'); markDaily('work'); },
   }
+  // Expose diagnostics only. No raw state setter or publisher survives Runtime takeover.
+  window.__petTest = Object.freeze({ getState: () => JSON.parse(JSON.stringify(P)), heartbeatHealth: legacyPetTest.heartbeatHealth,
+    runtimeSnapshot: () => roleRuntime.snapshot(), getAnim: legacyPetTest.getAnim })
   /* CLEAN-STRIP:END test */
 /* ---------- F5-B：Life Context 接线（纯追加；只提交输入 + 缓存能力投影，不做 I/O、不对外开口） ---------- */
 let lifeContextCapabilities = null // 最近一次主进程返回的 F5 能力投影（每轮现取；不落盘、不缓存到磁盘）
@@ -8533,7 +8520,9 @@ function lifeContextTickOnce() {
   try {
     const p = window.pet
     if (!p || typeof p.lifeContextTick !== 'function') return
-    Promise.resolve(p.lifeContextTick(lifeContextTickPayload())).then((r) => {
+    const payload = lifeContextTickPayload()
+    payload.runtime = Object.assign({}, payload.runtime, { characterRuntime: true })
+    Promise.resolve(p.lifeContextTick(payload)).then(async (r) => {
       if (r && r.ok === false && !r.skipped) { try { console.warn('[life-context] tick failed:', r.reason || '-') } catch (e) {} }
       if (r && r.capabilities) lifeContextCapabilities = r.capabilities
       // F6-B：只读镜像（tick 给什么就镜像什么；没给就明确标记不可用，绝不自己推演）
@@ -8546,7 +8535,11 @@ function lifeContextTickOnce() {
       lifeContextExperiences = (r && r.experiences) ? r.experiences : null
       /* S-6（Shadow Mode）：把本轮 F4 结果并入只读观测记录并落日志；只读 r，不改 r、不参与任何判定 */
       try { ShadowInternalLife.observe(r, Date.now()) } catch (e) { /* 观测不得影响主循环 */ }
-      proactiveAfterTick(r)   // F7-B：只在后端放行时呈现主动联系卡（本行不改任何既有行）
+      await window.PetLife.tick(runtimeLifeInput())
+      const living = window.PetLife.context(Date.now())
+      for (const activity of living.activities) if (activity.status !== 'active' && activity.runtimeContinuation) roleRuntime.completeContinuation(activity.runtimeContinuation)
+      updateMood(); renderLivingNotebook()
+      proactiveAfterTick(r)
     }).catch(() => { /* 单轮失败不影响主循环 */ })
   } catch (err) { /* 单轮失败不影响主循环 */ }
 }
@@ -8639,18 +8632,23 @@ function ensureProactiveCard() {
   proactiveCardBody = body
   return card
 }
-async function persistProactiveOpening(text, instanceId) {
+async function persistProactiveOpening(text, instanceId, execution) {
+  execution.assertCurrent()
   const entry = { role: 'assistant', text: String(text || ''), selfInitiated: true }
   if (instanceId) entry.messageRef = 'proactive:' + instanceId
-  const saved = await window.pet.characterHistoryAppend(entry)
+  const saved = await execution.commit(() => window.pet.characterHistoryAppend(entry))
+  execution.assertCurrent()
   if (!saved || saved.ok !== true) throw new Error('history_write_failed')
   if (instanceId) proactiveOpeningAppendedFor = instanceId
 }
-async function proactiveShowCard(text, instanceId) {
+async function proactiveShowCard(text, instanceId, execution) {
+  if (!roleRuntime.isAuthorized(execution)) return { ok: false, reason: "runtime_authorization_required" }
   const card = ensureProactiveCard()
   /* 最终文本在展示时进入统一历史，普通输入和重启后的追问均可读取。
      同一实例的展示/点击共用稳定 messageRef，由存储层幂等去重。 */
-  await persistProactiveOpening(text, instanceId)
+  await persistProactiveOpening(text, instanceId, execution)
+  execution.assertCurrent()
+  return execution.publish(() => {
   /* The owner can see what she wants to say without opening the chat panel. */
   if (proactiveCardBody) {
     proactiveCardBody.textContent = String(text || '')
@@ -8665,6 +8663,8 @@ async function proactiveShowCard(text, instanceId) {
     if (t && proactiveOpeningLog.indexOf(t) < 0) { proactiveOpeningLog.push(t); if (proactiveOpeningLog.length > 5) proactiveOpeningLog = proactiveOpeningLog.slice(-5) }
   } catch (err) { /* 记录失败不影响呈现 */ }
   proactiveFocusId = instanceId || null
+  return { ok: true, displayed: "card" }
+  })
 }
 function proactiveHideCard() { if (proactiveCardEl) proactiveCardEl.style.display = 'none' }
 /* S3/S4：点击卡片 ⇒ 进**主聊天窗**（聊天功能只存在一套＝Character Chat）。
@@ -8690,7 +8690,7 @@ async function proactiveOnCardClick() {
   if (id) proactiveOpeningPendingFor = id
   /* P0-1d：真实主动开场结构化落盘 selfInitiated——主进程窗口锚点判据用（C5 根因=文本标记从不落盘） */
   try {
-    await persistProactiveOpening(opening, id)
+    // The displayed opening was already durably committed by its Runtime execution.
     await renderCharc(true)
   } catch (err) {
     if (proactiveFocusId === id && proactiveCardEl) proactiveCardEl.style.display = 'block'
@@ -8698,7 +8698,7 @@ async function proactiveOnCardClick() {
     return
   } finally { if (proactiveOpeningPendingFor === id) proactiveOpeningPendingFor = null }
   Pace.onAssistant()
-  try { say(opening, 60000, 'character-chat') } catch (err) { /* 气泡失败不影响 history */ }
+  // Opening an existing history entry is display, not a second character publication.
   proactiveAwaitingReply = id ? { id: id, presentedAt: Date.now(), explicit: false } : null
 }
 function ensureProactivePanel() {
@@ -8726,6 +8726,7 @@ function ensureProactivePanel() {
   return wrap
 }
 function proactivePanelAdd(who, text) {
+  return { ok: false, reason: "runtime_owned" }
   const listEl = ensureProactivePanel() && proactivePanelListEl
   if (!listEl) return
   const line = proactiveEl('div', { margin: '4px 0', opacity: who === '我' ? '0.95' : '0.85' }, (who === '我' ? '我：' : '小深：') + String(text || ''))
@@ -8733,6 +8734,7 @@ function proactivePanelAdd(who, text) {
   listEl.scrollTop = listEl.scrollHeight
 }
 function proactiveOpenPanel(text) {
+  return { ok: false, reason: "runtime_owned" }
   const wrap = ensureProactivePanel()
   if (text) proactivePanelAdd('她', text)
   wrap.style.display = 'block'
@@ -8778,11 +8780,13 @@ function proactiveTopicContext() {
    呈现＝面板内滚动列表（受限高度、可读更早记录，消息用 textContent）；
    边界：本区块绝不引用 sessionCommand / sendChat / R.currentId（那三个属 DSH 派活面）。 */
 let charcBusy = false
+let characterUiExecutionId = null
 let charcRenderVersion = 0
 let charcVisibleLimit = 40
 let characterRetryTurn = null
 let latestCharacterTurnRef = null
-async function prepareCharacterTurn(text) {
+async function prepareCharacterTurn(text, execution) {
+  execution.assertCurrent()
   if (!characterRetryTurn || characterRetryTurn.text !== text) characterRetryTurn = { text, userSaved: false, reply: null }
   if (!characterRetryTurn.userSaved) {
     if (!characterRetryTurn.messageRef) characterRetryTurn.messageRef = window.MemoryMessageRef.next()
@@ -8795,46 +8799,54 @@ async function prepareCharacterTurn(text) {
   }
   const history = await window.pet.characterHistoryLoad()
   if (!Array.isArray(history)) throw new Error('history_load_failed')
-  return history
+  if (window.PlatformCandidate && window.PlatformCandidate.enabled && window.pet.platform) window.PlatformContext = await window.pet.platform.projection()
+  execution.assertCurrent()
+  const pendingInputs = new Set(roleRuntime.snapshot().queued.map(item => item.inputId))
+  const currentRef = characterRetryTurn && characterRetryTurn.messageRef
+  const prior = history.filter(row => row.messageRef !== currentRef && !(row.role === 'user' && pendingInputs.has(row.messageRef)))
+  const currentInput = history.find(row => row.messageRef === currentRef)
+  return currentInput ? prior.concat(currentInput) : prior
 }
-async function persistCharacterReply(text, reply) {
+async function persistCharacterReply(text, reply, execution) {
+  execution.assertCurrent()
   const turn = characterRetryTurn && characterRetryTurn.text === text ? { ...characterRetryTurn } : null
   if (characterRetryTurn && characterRetryTurn.text === text) characterRetryTurn.reply = reply
   const finalText = String(reply.text || '').replace(/^\[PRAISED\]\s*/, '')
-  const saved = await window.pet.characterHistoryAppend({ role: 'assistant', text: finalText })
+  const saved = await execution.commit(() => window.pet.characterHistoryAppend({ role: 'assistant', text: finalText, messageRef: 'reply:' + (turn && turn.messageRef || execution.executionId) }))
+  execution.assertCurrent()
   if (!saved || saved.ok !== true) throw new Error('history_write_failed')
   // Only a durably saved reply can create a continuous conversational memory.
   refreshCharacterHistoryViews()
   try {
     if (window.PetLife && turn && turn.messageRef) {
-      const ts = Date.now(), messageRef = turn.messageRef
+      const messageRef = turn.messageRef
+      const source = await window.pet.characterHistorySource(messageRef)
+      if (!source || source.text !== text) throw Error('history_source_invalid')
+      const ts = source.ts
       await window.PetLife.recordTurn({
-      userText: text, assistantText: finalText, memory: reply.continuityMemory || null,
+      runtimeExecution: execution, userText: text, assistantText: finalText, memory: reply.continuityMemory || null,
       messageRef, ts,
       replyTo: reply.conversation && reply.conversation.replyTo,
       conversation: reply.conversation || null
       })
-      // Closure captures this saved turn, never the mutable retry/current-turn slot.
-      if (reply.metadataPromise) reply.metadataPromise.then(async metadata => {
-        if (!metadata || metadata.messageRef !== messageRef) return
-        await window.PetLife.recordTurn({ metadataOnly: true, messageRef, ts, userText: text,
-          assistantText: finalText, memory: metadata.memory, conversation: metadata.conversation,
-          replyTo: reply.conversation && reply.conversation.replyTo })
-        if (latestCharacterTurnRef === messageRef && Date.now() - ts < 10000) presentCharacterExpression({ conversation: metadata.conversation })
-        renderLivingNotebook()
-      }).catch(err => console.warn('[pet-life] metadata save failed:', err.message))
+      execution.assertCurrent()
     }
   } catch (err) { console.warn('[pet-life] conversation save failed:', err.message) }
+  execution.assertCurrent()
   characterRetryTurn = null
   if (!reply.conversation || !reply.conversation.replyTo) proactiveAwaitingReply = null
   renderLivingNotebook()
 }
-function presentCharacterExpression(reply) {
+function presentCharacterExpression(reply, execution) {
+  if (!roleRuntime.isAuthorized(execution)) return
   if (R.running || R.dragging || R.sleepy) return
   const available = window.AnimationRegistry.list().map(a => typeof a === 'string' ? a : a.name || a.id)
   const plan = window.LivingPresence.expression(reply.conversation, available)
   setMood('idle')
-  if (plan.animation && $('anim-' + plan.animation)) showAnim(plan.animation, 4500, afterOneShotAnimation, { source: 'conversation', priority: 75, interruptible: true })
+  if (plan.animation && $('anim-' + plan.animation)) {
+    const continuationId = window.LivingPresence.ACTIONS[plan.animation] ? execution.continueAs('expression-animation') : null
+    showAnim(plan.animation, 4500, afterOneShotAnimation, { source: 'conversation', priority: 75, interruptible: true, runtimeExecution: execution, continuationId })
+  }
 }
 function renderLivingNotebook() {
   const host = $('living-notebook')
@@ -8925,19 +8937,30 @@ async function renderCharc(forceBottom) {
   if (more) more.hidden = !Array.isArray(hist) || hist.length <= charcVisibleLimit
   return tail.length
 }
-async function charcSend() {
+async function charcSend(execution, submittedText) {
+  if (window.pet.character?.authority) return submitKernelChat($('charc-input'))
+  if (!roleRuntime.isAuthorized(execution)) {
+    const input = $('charc-input'), text = input && String(input.value || '').trim()
+    if (!text) return
+    input.value = ''
+    const result = await submitOwnerReply(text, permit => charcSend(permit, text))
+    if (result && !result.ok && !result.cancelled && !result.committed && !input.value) input.value = text
+    return result
+  }
   const input = $('charc-input')
   if (!input) return
-  const text = String(input.value || '').trim()
-  if (!text || charcBusy || chatBusy) return
+  const text = submittedText || String(input.value || '').trim()
+  if (!text) return
   livingPresence.user()
   Pace.onUser() /* P0-1 第二批：主人开口 ⇒ 连发计数复位 */
-  input.value = ''
+  if (!submittedText) input.value = ''
   charcBusy = true
+  characterUiExecutionId = execution.executionId
+  let actionResult = { ok: false, reason: "reply_incomplete" }
   const btn = $('charc-send')
   if (btn) { btn.disabled = true; btn.textContent = '…' }
   try {
-    const history = await prepareCharacterTurn(text)
+    const history = await prepareCharacterTurn(text, execution)
     await renderCharc(true)
     const thinking = $('charc-status')
     if (thinking) thinking.textContent = '小深正在想怎么回你…'
@@ -8950,19 +8973,24 @@ async function charcSend() {
       const __aw2 = proactiveAwaitingReply
       if (__aw2 && __aw2.id) aiContext.proactiveReplyTo = { instanceId: __aw2.id, presentedAt: __aw2.presentedAt, opening: proactiveOpeningText || '', explicit: __aw2.explicit === true }
     } catch (err) { /* 取不到就不带 */ }
-    const r = (characterRetryTurn && characterRetryTurn.reply) || await characterChatRequest({ role: 'chat', userText: text, context: aiContext, history: history, timeoutMs: 90000, force: true, source: 'charc-tab' })
+    execution.assertCurrent()
+    const r = (characterRetryTurn && characterRetryTurn.reply) || await characterChatRequest({ role: 'chat', userText: text, context: aiContext, history: history, timeoutMs: 90000, force: true, source: 'charc-tab' }, execution)
+    execution.assertCurrent()
+    actionResult = { ok: !!(r && r.ok && r.text), reason: r && r.reason }
     const reply = (r && r.ok) ? r.text : null
     if (reply) {
-      await persistCharacterReply(text, r)
+      await persistCharacterReply(text, r, execution)
+      execution.assertCurrent()
       markDaily('chat')
-      maybeRememberFromChat(text)
+      maybeRememberFromChat(text, execution)
       addAffection(1)
-      presentCharacterExpression(r)
+      presentCharacterExpression(r, execution)
       let finalReply = String(reply)
       let praised = false
       if (finalReply.indexOf('[PRAISED]') === 0) { praised = true; finalReply = finalReply.replace(/^\[PRAISED\]\s*/, ''); unlockPhoto('praised') }
       Pace.onAssistant()
       await renderCharc(true)
+      execution.assertCurrent()
       /* S6：若本轮是"回应主动开场" ⇒ 上报 reply（状态 ③）并写一条 `P1_proactive_talk` 经历。
          本块与 sendMiniChat 里的那一段**同款**（契约逐行钉死两处相等，防两套逻辑漂移）。 */
       if (proactiveAwaitingReply && r.conversation && r.conversation.replyTo === proactiveAwaitingReply.id) {
@@ -8991,17 +9019,22 @@ async function charcSend() {
       if (!input.value) input.value = text
     }
   } catch (err) {
+    if (!execution.isCurrent()) return { ok: false, cancelled: true, reason: 'runtime_cancelled' }
+    actionResult = { ok: false, reason: err.code || err.message }
     if (!input.value) input.value = text
     const message = characterChatFailureMessage(err && err.message)
     const body = $('charc-body')
     if (body) { body.appendChild(charcEl('div', { fontSize: '12px', margin: '6px 0' }, message)); body.scrollTop = body.scrollHeight }
-    say(message, 6000, 'ui')
+    say(message, 6000, 'ui', undefined, execution)
   } finally {
+    if (characterUiExecutionId === execution.executionId) {
     charcBusy = false
     const thinking = $('charc-status')
     if (thinking) thinking.textContent = ''
     if (btn) { btn.disabled = false; btn.textContent = '发送 ➤' }
+    }
   }
+  return actionResult
 }
 
 /* tick 之后：只在后端放行时呈现；**本函数不做任何判定/选择**。
@@ -9017,6 +9050,8 @@ function proactivePresentationBlocked() {
     quiet || (typeof game !== 'undefined' && game && game.playing) || typing || Pace.blocked()
 }
 function proactiveAfterTick(r) {
+  void runtimeOpportunity(r)
+  return // Old F4/M2 publication orchestration is no longer an entry point.
   try {
     if (!r || r.ok !== true) return
     const pr = r.proactive
@@ -9790,14 +9825,15 @@ lifeContextTickPayload = function () {
         persona: c.personaProjection, busy: !!(R.busy || chatBusy || charcBusy || (game && game.playing)),
         visible: !R.hidden, availableActions: R.hidden ? [] : Object.keys(window.LivingPresence.ACTIONS).filter(id => !!$('anim-' + id) && !failedAnimations.has(id)),
         aiEnabled: !!proactiveOn, memories: window.MemoryEngine ? window.MemoryEngine.getMemories() : [] }
-      window.PetLife.tick(input).then(() => { updateMood(); renderLivingNotebook() }).catch(err => console.warn('[pet-life] tick failed:', err.message))
+      input.aiEnabled = false
+      // PetLife domain progression is awaited at the tick result, not started while building a read payload.
       if (window.PetLife.snapshot().ready) {
         p.runtime.semanticTopics = true
         const topics = window.PetLife.candidates({ nowTs: input.nowTs, memories: input.memories,
           history: chatHistoryCache, reality: window.lifeRealityForPrompt(), events: c.recentEvents })
-        if (!window.PetLife.canPlan(input.nowTs)) p.pool = (p.pool || []).filter(x => !['seek_attention', 'comment_on_activity', 'accompany_owner', 'celebrate'].includes(x.actionId))
+        if (Date.now() < roleRuntime.snapshot().quietUntil) p.pool = (p.pool || []).filter(x => !['seek_attention', 'comment_on_activity', 'accompany_owner', 'celebrate'].includes(x.actionId))
         const motive = topics.find(t => t.source !== 'environment')
-        if (!input.busy && motive && window.PetLife.canPlan(input.nowTs)) {
+        if (!input.busy && motive && Date.now() >= roleRuntime.snapshot().quietUntil) {
           const loneliness = Number(c.emotion && c.emotion.values && c.emotion.values.loneliness) || 0
           const candidate = { actionId: 'seek_attention', score: 55 + Math.min(15, loneliness * 15), priority: 0, source: 'pet-life',
             internalDirection: { type: 'living_motive', about: motive.id, carrier: { memoryId: motive.id }, evidenceRefs: ['pet:life:' + motive.id] } }

@@ -25,7 +25,19 @@
   function internals() { return (agw()._internals) || {} }
 
   // 原文生成与最终事实核验分开；底层不能先把正文换成兜底，再让这里核验兜底。
-  async function llm(p) { return agw().generate(p) }
+  async function llm(p) {
+    if (['M1_reply', 'M2_say'].includes(p.promptStage)) p = { ...p, system: String(p.system || '') + '\n【输出通道】本次只生成普通聊天正文。动画由独立表现通道执行；不在正文输出括号或星号包裹的舞台动作、内心独白。事件中的 actor 是行为者，observer 只是观察者，不能互换。' }
+    if (window.PlatformCandidate && window.PlatformCandidate.enabled && window.ContextProjector && p.projectionInput) {
+      const projection = window.ContextProjector.project(p.promptStage, { ...p.projectionInput, promptRevision: window.PromptConfig ? window.PromptConfig.revision() : 'builtin' })
+      p = { ...p, system: String(p.system || '') + '\n【本次相关语境】\n' + projection.text, projectionTrace: projection.trace }
+    }
+    const result = await agw().generate(p)
+    if (result && result.ok && ['M1_reply', 'M2_say'].includes(p.promptStage) && window.SpeechChannel) {
+      const channel = window.SpeechChannel.validate(result.text)
+      if (!channel.ok) return { ok: false, reason: channel.reason, rawText: result.text, text: '' }
+    }
+    return result
+  }
 
   /* ---------------- M2：决策（抽象角色） + 措辞（{名} 人设） ---------------- */
 
@@ -33,11 +45,12 @@
     return pt('m2.0f7edc8475', '根据交流情境和真实来源，判断此刻是否有值得交流的内容。') + (taskLine || '')
   }
 
-  async function proactiveDecideSay(payload) {
+  async function proactiveDecide(payload, execution) {
+    if (window.RoleRuntime && !window.RoleRuntime.isAuthorized(execution)) return { ok: false, reason: "runtime_authorization_required" }
     const p = window.ContextSelection ? window.ContextSelection.proactive(payload) : payload || {}
     const candidates = Array.isArray(p.candidates) ? p.candidates : []
     if (!candidates.length) return { ok: true, silent: true, reason: 'no_sourced_topic' }
-    if (window.PetLife && typeof window.PetLife.reserveDecision === 'function') {
+    if (!execution && window.PetLife && typeof window.PetLife.reserveDecision === 'function') {
       const r = window.PetLife.reserveDecision(Date.now())
       if (r && r.ok === false && r.unchanged) return { ok: false, reason: 'thinking_cooldown' }
     }
@@ -60,7 +73,7 @@
       selfState: ctx.selfState || null, emotion: ctx.emotion || null, relationship: ctx.relationship || null,
       /* 候选必须带日期与新鲜度（pet-life.js:472-501 提供）：否则 10 天前的事与刚发生的事在提示词里无差别。
          只给标签，不加"旧事不许说成刚发生"这类禁令——缺口在数据不在措辞。 */
-      candidates: candidates.map(c => ({ id: c.id, text: c.text, forms: c.forms, date: c.date || null, fresh: !!c.fresh })),
+      candidates: candidates.map(c => ({ id: c.id, text: c.text, forms: c.forms, date: c.date || null, fresh: !!c.fresh, actor: c.actor || 'unknown', observer: c.observer || 'unknown', subject: c.subject || c.actor || 'unknown', world: c.world || 'unknown', sourceType: c.sourceType || c.source, opportunity: c.opportunity || null })),
       recentOpenings: (p.recentOpenings || []).slice(-5),
       /* 最近联系：过去开口过什么、什么时候（真实 ts）。原来只读 p.recentContacts（payload 里没有该字段）⇒ 恒空。 */
       recentContacts: ((p.recentContacts && p.recentContacts.length ? p.recentContacts : (ctx.petLife && ctx.petLife.recentContacts) || []) || [])
@@ -70,7 +83,8 @@
           replied: !!(c && c.repliedAt)
         }))
     })
-    const dr = await llm({ purpose: 'proactive', promptStage: 'M2_decide', system: decideSystem, userText: decideUser, temperature: TEMP.decide, maxTokens: 800, timeoutMs: 60000 })
+    const dr = await llm({ purpose: 'proactive', promptStage: 'M2_decide', system: decideSystem, userText: decideUser, projectionInput: p, temperature: TEMP.decide, maxTokens: 800, timeoutMs: 60000 })
+    if (execution) execution.assertCurrent()
     if (!dr || !dr.ok) return { ok: false, reason: (dr && dr.reason) || 'provider_failed', source: 'fallback', opening: null, topic: null }
     let raw = internals().parseStructured ? internals().parseStructured(dr.text) : null
     if (!raw) return { ok: false, reason: 'invalid_decision_json', source: 'fallback', opening: null, topic: null }
@@ -78,22 +92,35 @@
     const v = window.PetLifeModule && window.PetLifeModule.validateDecision
       ? window.PetLifeModule.validateDecision(Object.assign({}, raw, { opening: String(raw.focus || '待写').slice(0, 100) }), candidates, p.action)
       : { ok: false, reason: 'no_validator' }
-    if (window.PetLife && typeof window.PetLife.decisionFeedback === 'function' && (!v.ok || v.silent)) {
+    if (!execution && window.PetLife && typeof window.PetLife.decisionFeedback === 'function' && (!v.ok || v.silent)) {
       try { await window.PetLife.decisionFeedback({ nowTs: Date.now(), quiet: !v.ok || !!v.silent }) } catch (e) { /* ignore */ }
     }
     if (!v.ok) return { ok: false, reason: v.reason, source: 'fallback', opening: null, topic: null }
     if (v.silent) return { ok: true, silent: true, reason: 'planner_silent' }
 
+    return { ok: true, silent: false, prepared: { p, raw, v } }
+  }
+
+  async function proactiveSay(decision, execution) {
+    if (window.RoleRuntime && !window.RoleRuntime.isAuthorized(execution)) return { ok: false, reason: 'runtime_authorization_required' }
+    if (!decision || !decision.ok || decision.silent || !decision.prepared) return decision || { ok: false, reason: 'missing_decision' }
+    const { p, raw, v } = decision.prepared
+    const ctx = p.context || {}, name = nameOf(ctx), S = slots()
     /* 措辞调用：{名} 人设（ID+VO 半槽），只说这一句 */
+    const sayStyle = S && S.styleSlot ? await S.styleSlot('M2_say') : null
     const saySystem = S ? S.join([
       S.idSlot(name),
       S.voSlot(),
       S.characterSlot ? S.characterSlot(ctx, String(raw.focus || '')) : '',
+      sayStyle ? pt(sayStyle.promptId, '') : '',
       pt('m2.6f027c6a99', '以当前角色的身份，把已经决定分享的内容自然地说出来。结合当下情况组织语言，表达自己的意思。'),
       '只输出这一句话。'
     ]) : null
-    const sayUser = '交流关注点：' + String(raw.focus || v.topic || '') + '（真实来源素材：' + String((v.candidate && v.candidate.text) || '') + '）'
-    const sr = await llm({ purpose: 'proactive', promptStage: 'M2_say', system: saySystem, userText: sayUser, temperature: TEMP.say, maxTokens: 200, timeoutMs: 60000 })
+    const candidate = v.candidate || {}
+    const sayUser = JSON.stringify({ focus: String(raw.focus || v.topic || ''), opportunity: candidate.opportunity || { reason: 'selected_topic_with_current_availability' }, evidence: { text: candidate.text || '', actor: candidate.actor || 'unknown', observer: candidate.observer || 'unknown', subject: candidate.subject || candidate.actor || 'unknown', world: candidate.world || 'unknown', occurredAt: candidate.originTs || null, sourceType: candidate.sourceType || candidate.source }, communication: candidate.kind === 'social_contact' ? '自然闲聊；不得声称有新事件或虚构共同经历。' : '可以使用真实素材；不要求复述事件。' })
+    if (execution) execution.assertCurrent()
+    const sr = await llm({ purpose: 'proactive', promptStage: 'M2_say', system: saySystem, userText: sayUser, projectionInput: { ...p, candidate: v.candidate }, temperature: TEMP.say, maxTokens: 200, timeoutMs: 60000 })
+    if (execution) execution.assertCurrent()
     let opening = ((sr && sr.ok && sr.text) || '').trim()
     if (!opening) return { ok: false, reason: 'empty_opening', source: 'fallback', opening: null, topic: null }
 
@@ -101,10 +128,15 @@
     if (MEM_GUARANTEE_RE.test(opening)) opening = ''
     if (opening && opening.length > 100) opening = opening.slice(0, 100)
     if (!opening) return { ok: false, reason: 'invalid_opening', source: 'fallback', opening: null, topic: null }
+    if (window.EvidenceClaims) {
+      const checked = window.EvidenceClaims.check(opening, { candidate: v.candidate, life: p.life || ctx.petLife, nowTs: p.nowTs || Date.now() })
+      if (!checked.ok) return { ok: false, reason: 'guard_rejected', guardReason: checked.reason, rawText: opening, opening: null, topic: null }
+    }
     const guard = internals().finalClaimGuard
     let guarded = guard ? guard(opening, internals().withLifeEvidence ? internals().withLifeEvidence(ctx, p.life) : null) : { text: opening, reason: null }
     if (guarded.reason) {
       const fixed = await repairOnce(opening, guarded.reason, ctx)
+      if (execution) execution.assertCurrent()
       const re = fixed && guard ? guard(fixed, internals().withLifeEvidence ? internals().withLifeEvidence(ctx, p.life) : null) : null
       if (re && !re.reason) guarded = re
       else return { ok: false, reason: 'guard_rejected', source: 'fallback', opening: null, topic: null, guardReason: guarded.reason }
@@ -114,6 +146,11 @@
     if (recent.length && bigramDup(guarded.text, recent)) return { ok: false, reason: 'duplicate_opening', source: 'fallback', opening: null, topic: null }
     return { ok: true, silent: false, source: 'ai', opening: guarded.text, topic: String(raw.focus || v.topic || '').slice(0, 60),
       sourceIds: v.sourceIds, sourceKeys: v.sourceKeys, fresh: v.fresh, form: v.form, candidate: v.candidate, candidateId: v.candidateId }
+  }
+
+  async function proactiveDecideSay(payload, execution) {
+    const decision = await proactiveDecide(payload, execution)
+    return proactiveSay(decision, execution)
   }
 
   function bigramDup(text, recentList) {
@@ -195,6 +232,7 @@
     const original = payload || {}
     const p = window.ContextSelection ? window.ContextSelection.chat(original) : original
     const ctx = Object.assign({}, p.context || {}, { userText: String(p.userText || '') })
+    if (window.PlatformCandidate && window.PlatformCandidate.enabled && window.PlatformContext) ctx.platform = window.PlatformContext
     const S = slots()
     const name = nameOf(ctx)
     const userText = String(p.userText || '')
@@ -202,6 +240,7 @@
     const memories = brief ? [] : ((ctx.relevantMemories || ctx.memories) || []).slice(0, 3)
     const facts = ctx.runtimeFacts || {}
     const openThreads = brief ? [] : (p.frame && p.frame.openThreads) || []
+    const replyStyle = !brief && S && S.styleSlot ? await S.styleSlot('M1_reply') : null
 
     const system = S.join([
       S.idSlot(name, { honest: true }),
@@ -220,13 +259,18 @@
         return '- ' + label + when
       }).filter(Boolean).join('\n') : '',
       memories.length ? pt('m1.37a820fae4', '【回复信息参考（只是参考，不用完全遵守，不要逐字复述；有日期即该事发生时间）】\n') + memories.map(m => '- ' + memoryDate(m) + String(m.content || m.text || '') + confidenceLabel(m)).join('\n') : '',
+      replyStyle ? pt(replyStyle.promptId, '') : '',
       pt('m1.4c9d3ced5c', '先接住主人这句话再说别的；主人收束就自然收束，不每句反问。'),
       pt('m1.935da7e303', '只输出回复正文，不要任何多余内容。')
     ])
     const relationLine = (ctx.proactiveReplyTo ? pt('m1.7671c9bfe3', '[关系] 主人这句是在回应我刚才主动开口的那条消息。\n') : '')
     /* 元数据（记忆/speechAct/话题）与表达并行：记忆只依赖主人原话，无需等回复 */
-    const metaPromise = turnMeta({ userText, history: p.history, frame: p.frame })
-    const rr = await llm({ purpose: 'character-chat', promptStage: brief ? 'M1_short' : 'M1_reply', system, userText: relationLine + userText, history: p.history, historyMetadata: true, temperature: TEMP.reply, maxTokens: p.maxTokens || 1536, timeoutMs: p.timeoutMs || 90000 })
+    const metaPromise = turnMeta({ userText, history: p.history, frame: p.frame }).then(meta => ({
+      messageRef: p.messageRef || (p.frame && p.frame.turnRef), memory: meta.memory || null, ok: meta.ok !== false, reason: meta.reason || null,
+      conversation: window.ConversationPolicy ? window.ConversationPolicy.validateResponse(meta.policyPayload || {}, p.frame) : null
+    }))
+    if (typeof p.onMetadata === 'function') p.onMetadata(metaPromise)
+    const rr = await llm({ purpose: 'character-chat', promptStage: brief ? 'M1_short' : 'M1_reply', system, userText: relationLine + userText, projectionInput: { ...p, context: ctx }, history: p.history, historyMetadata: true, temperature: TEMP.reply, maxTokens: p.maxTokens || 1536, timeoutMs: p.timeoutMs || 90000 })
     if (!rr || !rr.ok) return rr
     let text = String(rr.text || '').trim()
     if (!text) return { ok: false, reason: 'invalid_chat_response', text: null }
@@ -254,8 +298,7 @@
       rawText: text,
       continuityMemory: null,
       conversation: policy ? policy.validateResponse({}, p.frame) : null,
-      metadataPromise: metaPromise.then(meta => ({ messageRef: p.messageRef || (p.frame && p.frame.turnRef),
-        memory: meta.memory || null, conversation: policy ? policy.validateResponse(meta.policyPayload || {}, p.frame) : null })),
+      metadataPromise: metaPromise,
       guardReason: checked.reason || null
     }
   }
@@ -284,11 +327,13 @@
         userText: JSON.stringify({ currentUserText: userText, history: (input.history || []).slice(-4) })
       })
       const parsed = r && r.ok && internals().parseStructured ? internals().parseStructured(r.text) : null
-      return { memory: (parsed && parsed.memory) || null, policyPayload: parsed || {} }
-    } catch (e) { return { memory: null, policyPayload: {} } }
+      if (!r || !r.ok) return { memory: null, policyPayload: {}, ok: false, reason: r && r.reason || 'provider_failed' }
+      if (!parsed) return { memory: null, policyPayload: {}, ok: false, reason: 'metadata_invalid_json' }
+      return { memory: parsed.memory || null, policyPayload: parsed, ok: true }
+    } catch (e) { return { memory: null, policyPayload: {}, ok: false, reason: e.message || 'metadata_exception' } }
   }
 
   try {
-    window.Gen2 = { chatReply, proactiveDecideSay, turnMeta, repairOnce, TEMP, nowLine, _internals: { nowLine, factValue } }
+    window.Gen2 = { chatReply, proactiveDecide, proactiveSay, proactiveDecideSay, turnMeta, repairOnce, TEMP, nowLine, _internals: { nowLine, factValue } }
   } catch (e) { /* ignore */ }
 })()

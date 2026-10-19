@@ -14,12 +14,18 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, existsSync } fr
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { runtimeFiles, auditArchive } = require('./runtime-files.cjs')
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const marker = join(root, 'build', 'clean-edition.json')
 const cfgFile = join(root, 'build', 'electron-builder-clean.json')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const version = pkg.version
+const directoryOnly = process.argv.includes('--dir')
+const outputDirectory = process.env.DESKPET_BUILD_OUTPUT || 'dist-clean'
+const preservedBuildFiles = new Map([marker, cfgFile, join(root, 'build', 'daily-collector.json')].map(file => [file, existsSync(file) ? readFileSync(file) : null]))
 
 /* ---------- 剔除工具 ---------- */
 function stripBlocks(text, names) {
@@ -129,14 +135,16 @@ try {
     ...(pkg.build || {}),
     appId: 'com.deskpet.xiaoshen-clean',
     productName: '桌宠小深纯净版',
-    directories: { ...(pkg.build?.directories || {}), output: 'dist-clean' },
+    directories: { ...(pkg.build?.directories || {}), output: outputDirectory },
     artifactName: 'deskpet-setup-clean-${version}.${ext}',
     nsis: {
       ...((pkg.build && pkg.build.nsis) || {}),
       shortcutName: '桌宠小深纯净版',
       artifactName: 'deskpet-setup-clean-${version}.${ext}',
     },
-    files: ['main.js', 'state-store.cjs', 'custom-model-store.cjs', 'pet-life-store.cjs', 'official-harness.js', 'preload.js', 'renderer/**/*', '!renderer/prompt-manager*', 'package.json', '!build/**', '!node_modules/electron-updater/**', '!node_modules/elevate/**'],
+    files: [...runtimeFiles(root), 'character/**/*', 'renderer/**/*', '!renderer/prompt-manager*', '!renderer/prompt-workflows.js', '!prompt-manager*', '!prompt-sample-runner.cjs', 'package.json', 'trusted-extensions/**/*', '!node_modules/electron-updater/**', '!node_modules/elevate/**'],
+    npmRebuild: false,
+    ...(process.env.DESKPET_ELECTRON_DIST ? { electronDist: process.env.DESKPET_ELECTRON_DIST } : {}),
     extraResources: [
       ...((pkg.build && pkg.build.extraResources) || []),
       { from: 'build/clean-edition.json', to: 'clean-edition.json' },
@@ -147,19 +155,24 @@ try {
 
   /* ---------- 构建 ---------- */
   console.log('[build-clean] building (files temporarily swapped to clean variant)...')
-  const r = spawnSync('node', ['node_modules/electron-builder/out/cli/cli.js', '--win', 'nsis', '--config', cfgFile, '-p', 'never'], {
+  const r = spawnSync('node', ['node_modules/electron-builder/out/cli/cli.js', ...(directoryOnly ? ['--dir', '--win'] : ['--win', 'nsis']), '--config', cfgFile, '-p', 'never'], {
     cwd: root,
     stdio: 'inherit',
   })
   if (r.status !== 0) {
     console.error('[build-clean] FAILED, status', r.status)
-    process.exit(1)
+    throw Error('electron-builder failed: ' + r.status)
   }
+  const archive = join(root, outputDirectory, 'win-unpacked', 'resources', 'app.asar')
+  const audit = auditArchive(require('@electron/asar'), archive)
+  if (!audit.ok) throw Error('Packaged runtime dependency check failed: ' + JSON.stringify(audit.missing))
+  console.log('[build-clean] dependency check passed')
   console.log('[build-clean] done, version', version)
   console.log('  产物: dist-clean/deskpet-setup-clean-' + version + '.exe')
 } finally {
   restore()
-  rmSync(marker, { force: true })
-  rmSync(join(root, 'build', 'daily-collector.json'), { force: true })
-  rmSync(cfgFile, { force: true })
+  for (const [file, bytes] of preservedBuildFiles) {
+    if (bytes === null) rmSync(file, { force: true })
+    else writeFileSync(file, bytes)
+  }
 }

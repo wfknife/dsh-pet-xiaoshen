@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const characterBoot = ipcRenderer.sendSync('character:boot') || { authority: false }
 
 let __historyEpoch = Date.now().toString(36)
 let __historySeq = 0
@@ -8,9 +9,77 @@ function __nextMessageRef() {
 }
 
 contextBridge.exposeInMainWorld('pet', {
+  platform: {
+    info: () => ipcRenderer.invoke('platform:info'),
+    factBegin: input => ipcRenderer.invoke('platform:factBegin', input),
+    extraction: (ref, result) => ipcRenderer.invoke('platform:extraction', ref, result),
+    recover: () => ipcRenderer.invoke('platform:recover'),
+    export: () => ipcRenderer.invoke('platform:export'),
+    restore: backup => ipcRenderer.invoke('platform:restore', backup),
+    factState: ref => ipcRenderer.invoke('platform:factState', ref),
+    factAdvance: (ref, step, detail) => ipcRenderer.invoke('platform:factAdvance', ref, step, detail),
+    pendingFacts: () => ipcRenderer.invoke('platform:pendingFacts'),
+    forget: refs => ipcRenderer.invoke('platform:forget', refs),
+    operationBegin: proposal => ipcRenderer.invoke('platform:operationBegin', proposal),
+    operationUpdate: (id, status, receipt) => ipcRenderer.invoke('platform:operationUpdate', id, status, receipt),
+    beginOperation: proposal => ipcRenderer.invoke('platform:operationBegin', proposal),
+    updateOperation: (id, status, receipt) => ipcRenderer.invoke('platform:operationUpdate', id, status, receipt),
+    operation: id => ipcRenderer.invoke('platform:operation', id),
+    projection: () => ipcRenderer.invoke('platform:projection'),
+    capabilities: () => ipcRenderer.invoke('platform:capabilities'),
+    invokeCapability: input => ipcRenderer.invoke('platform:capabilityInvoke', input),
+    select: (candidates, policy) => ipcRenderer.invoke('platform:select', candidates, policy),
+    presented: id => ipcRenderer.invoke('platform:presented', id),
+    projectStep: (id, operationId) => ipcRenderer.invoke('platform:projectStep', id, operationId),
+    delivery: row => ipcRenderer.invoke('platform:delivery', row),
+    onInvalidated: callback => ipcRenderer.on('characterPlatform:invalidated', (_event, data) => callback(data)),
+    packageInstall: folder => ipcRenderer.invoke('platform:packageInstall', folder),
+    packageDisable: id => ipcRenderer.invoke('platform:packageDisable', id),
+    packageUninstall: id => ipcRenderer.invoke('platform:packageUninstall', id),
+    packageRollback: id => ipcRenderer.invoke('platform:packageRollback', id)
+  },
   prompts: { snapshot: () => ipcRenderer.sendSync('prompts:snapshot') },
+  /* 长驻角色内核的唯一桥（总规 §9.1 / §19 迁移表）。
+     只暴露 submit/read/cancel/subscribe 语义：**不暴露任意状态写**，
+     renderer 不能提交整个角色对象，也不能自报权限。默认 mode=off 时全部返回 kernel_off。 */
+  character: {
+    perception: enabled => ipcRenderer.invoke('character:perception', enabled),
+    authority: characterBoot.authority === true,
+    observe: event => ipcRenderer.invoke('character:observe', event),
+    status: () => ipcRenderer.invoke('character:status'),
+    submit: command => ipcRenderer.invoke('character:submit', command),
+    read: query => ipcRenderer.invoke('character:read', query || {}),
+    cancel: payload => ipcRenderer.invoke('character:cancel', payload || {}),
+    onPresentation: callback => {
+      const listener = (_event, intent) => callback(intent)
+      ipcRenderer.on('character:presentation', listener)
+      return () => ipcRenderer.removeListener('character:presentation', listener)
+    },
+    onEvent: callback => {
+      const listener = (_event, event) => callback(event)
+      ipcRenderer.on('character:event', listener)
+      return () => ipcRenderer.removeListener('character:event', listener)
+    },
+    delivery: row => ipcRenderer.invoke('character:submit', {
+      commandId: 'delivery:' + String(row && row.presentationId || '') + ':' + String(row && row.channel || '') + ':' + String(row && row.phase || ''),
+      schemaVersion: 1,
+      kind: 'presentation.receipt',
+      characterId: row && row.characterId,
+      payload: { delivery: row },
+    }),
+  },
   api: (method, payload) => ipcRenderer.invoke('api', method, payload),
   dshCall: (method, payload) => ipcRenderer.invoke('dsh:call', method, payload),
+  modelConfig: {
+    setDefaultModel: value => ipcRenderer.invoke('modelConfig:defaultModel', value),
+    get: () => ipcRenderer.invoke('modelConfig:get'),
+    save: value => ipcRenderer.invoke('modelConfig:save', value),
+    setDefault: id => ipcRenderer.invoke('modelConfig:default', id),
+    remove: id => ipcRenderer.invoke('modelConfig:remove', id),
+    route: (role, value) => ipcRenderer.invoke('modelConfig:route', role, value),
+    probe: id => ipcRenderer.invoke('modelConfig:probe', id),
+    test: (id, model) => ipcRenderer.invoke('modelConfig:test', id, model)
+  },
   llmApi: {
     get: () => ipcRenderer.invoke('llmApi:get'),
     set: (v) => ipcRenderer.invoke('llmApi:set', v)
@@ -92,8 +161,10 @@ contextBridge.exposeInMainWorld('pet', {
   permissionGet: (sessionId) => ipcRenderer.invoke('permission:get', sessionId),
   permissionSet: (payload) => ipcRenderer.invoke('permission:set', payload),
   characterHistoryLoad: () => ipcRenderer.invoke('characterHistory:load'),
+  characterHistorySource: (messageRef) => ipcRenderer.invoke('characterHistory:source', messageRef),
+  onCharacterHistoryInvalidated: (cb) => ipcRenderer.on('characterHistory:invalidated', (_e, detail) => cb(detail)),
   petLifeLoad: () => ipcRenderer.invoke('petLife:load'),
-  petLifeSave: (state) => ipcRenderer.invoke('petLife:save', state),
+  petLifeSave: (state, source) => ipcRenderer.invoke('petLife:save', state, source),
   nextMessageRef: () => __nextMessageRef(),
   characterHistoryAppend: (entry) => {
     const base = entry && typeof entry === 'object' ? entry : {}
@@ -108,6 +179,11 @@ contextBridge.exposeInMainWorld('pet', {
   dshStop: () => ipcRenderer.invoke('dsh:stop'),
   harnessStatus: () => ipcRenderer.invoke('harness:status'),
   harnessEnsure: () => ipcRenderer.invoke('harness:ensure'),
+  onHarnessChanged: callback => {
+    const listener = () => { if (typeof callback === 'function') callback() }
+    ipcRenderer.on('harness:changed', listener)
+    return () => ipcRenderer.removeListener('harness:changed', listener)
+  },
   updateConfig: () => ipcRenderer.invoke('update:config'),
   updateSetConfig: (baseUrl) => ipcRenderer.invoke('update:setConfig', baseUrl),
   updateCheck: () => ipcRenderer.invoke('update:check'),
@@ -162,7 +238,6 @@ contextBridge.exposeInMainWorld('pet', {
   memoryLoad: () => ipcRenderer.invoke('memory:load'),
   memorySave: (data) => ipcRenderer.invoke('memory:save', data),
   personaLoad: () => ipcRenderer.invoke('persona:load'),
-  promptTestRun: () => ipcRenderer.invoke('prompts:run-isolated'),
   personaSave: (data) => ipcRenderer.invoke('persona:save', data),
   photoViewOpen: (id) => ipcRenderer.send('album:view', id),
   closePhotoView: () => ipcRenderer.send('album:viewClose'),

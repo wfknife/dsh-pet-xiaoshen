@@ -1,0 +1,29 @@
+/* Model settings stay flat and visible; only optional controls are folded. */
+.model-settings { display:grid; gap:9px; min-width:0; color:var(--dp-c-text); font-size:12px; line-height:1.5; }
+.model-settings * { box-sizing:border-box; }
+.model-settings .ms-form,.model-settings .ms-fields { display:grid; gap:9px; min-width:0; }
+.model-settings .ms-field { display:grid; grid-template-columns:52px minmax(0,1fr); gap:8px; align-items:center; min-width:0; }
+.model-settings .ms-field label { color:var(--dp-c-text-muted); font-size:11px; }
+.model-settings .dp-name-input { display:block; width:100%; min-width:0; max-width:100%; margin:0; padding:7px 8px; border-radius:5px; font-size:12px; }
+.model-settings .ms-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; }
+.model-settings .ms-actions select { flex:1 1 100px; }
+.model-settings .dp-mini-btn { min-height:30px; padding:5px 9px; border-radius:5px; font-size:11px; }
+.model-settings .ms-primary { background:var(--dp-c-brand); color:var(--dp-c-surface); border-color:var(--dp-c-brand); }
+.model-settings .ms-primary:hover { background:var(--dp-c-brand); filter:brightness(1.08); }
+.model-settings .ms-help { margin:0; color:var(--dp-c-text-weak); font-size:11px; overflow-wrap:anywhere; }
+.model-settings #model-protocol-hint { margin-left:60px; }
+.model-settings .ms-status { font-size:11px; color:var(--dp-c-text-muted); overflow-wrap:anywhere; }
+.model-settings .ms-status[data-kind=error] { color:var(--dp-c-danger); }
+.model-settings .ms-advanced { border-top:1px solid var(--dp-c-border); padding-top:7px; }
+.model-settings summary { padding:3px 0; cursor:pointer; color:var(--dp-c-text-muted); font-size:12px; }
+.model-settings .ms-fields { padding:9px 0 3px; }
+.model-settings summary:focus-visible,.model-settings button:focus-visible { outline:2px solid var(--dp-c-brand); outline-offset:2px; }
+.model-settings .ms-route { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:6px; align-items:center; padding:10px 0; border-bottom:1px solid var(--dp-c-border); }
+.model-settings input[type=checkbox] { accent-color:var(--dp-c-brand); width:15px; height:15px; margin:0; }
+.model-settings .ms-route>label { font-size:11px; }
+.model-settings .ms-route-editor { grid-column:1 / -1; display:grid; gap:7px; padding:8px; background:var(--dp-c-surface-2); border-radius:5px; }
+.model-settings .ms-route-editor[hidden] { display:none; }
+.model-settings .ms-route>.dp-panel-hint { grid-column:1 / -1; margin:0; line-height:1.5; }
+.model-settings .ms-route-editor button { justify-self:start; }
+.model-settings .ms-danger { color:var(--dp-c-danger); background:transparent; border-color:var(--dp-c-border); }
+.model-settings[inert] { opacity:.72; }

@@ -1,7 +1,10 @@
 /* Prompt 槽位库（v4 槽位装配，persona-draft Part 3.0）
  * 原则：prompt 只取需要的槽，各司其职；人设不整篇喂；人设形容词不进 prompt，性格由行为槽体现。
  * 自称名唯一来源 = displayName（用户自定义）；「小深」只是程序名，永不出现在槽文本里。 */
-(function () {
+(function (factory) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = { createSlots: factory }
+  else window.PromptSlots = factory(window)
+})(function (window) {
   'use strict'
   function pt(id, fallback) { return typeof window !== 'undefined' && window.PromptConfig ? window.PromptConfig.text(id, fallback) : fallback }
 
@@ -46,6 +49,13 @@
     return (parts || []).filter(Boolean).join('\n')
   }
 
+  // Metadata only. PromptConfig owns the actual style text.
+  async function styleSlot(stage) {
+    try {
+      return window.ExpressionStylePolicy ? await window.ExpressionStylePolicy.select(stage) : null
+    } catch (e) { return null }
+  }
+
   // A small data projection for expression only. Keep the existing VO/WR voice.
   function characterSlot(context, topic) {
     const c = context || {}, p = c.personaProjectionDiary || c.personaProjection || c.persona || {}
@@ -61,7 +71,5 @@
     return '【本轮动态状态】' + JSON.stringify(data) + pt('m1.19cacf306d', '\n这些资料影响分寸与关注点，按当前话题自然表达。')
   }
 
-  try {
-    window.PromptSlots = { idSlot: idSlot, voSlot: voSlot, wrSlot: wrSlot, cdSlot: cdSlot, ftSlot: ftSlot, sfSlot: sfSlot, join: join, characterSlot }
-  } catch (e) { /* ignore */ }
-})()
+  return { idSlot: idSlot, voSlot: voSlot, wrSlot: wrSlot, cdSlot: cdSlot, ftSlot: ftSlot, sfSlot: sfSlot, join: join, characterSlot, styleSlot }
+})

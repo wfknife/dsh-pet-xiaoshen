@@ -2,6 +2,8 @@
 node_modules/
 dist/
 dist-clean/
+dist-character-*/
+tests/artifacts/
 data/
 open-source/
 
@@ -83,6 +85,9 @@ build/*
 !build/upload-cos.mjs
 !build/verify-dual-release.cjs
 !build/version-compare.js
+!build/prepare-native.cjs
+!build/runtime-files.cjs
+!build/installer.nsh
 # local leftovers (2026-10-11)
 *.bak-*
 *.lnk

@@ -3,8 +3,8 @@
  * Official Harness Desktop Adapter（Phase 4-P1 / P4-P2）
  *
  * 桌宠与「官方 DeepSeek Harness Desktop」的**唯一耦合点**。职责：
- *   1) 检测：官方是否安装 / 安装位置 / 版本 / 是否在运行 / 19387 是否监听（全部只读）；
- * 2) 接入：**接入正在运行的 Desktop 自己的服务**（127.0.0.1:19387）——
+ *   1) 检测：安装、进程及 Desktop Host 实际的本机监听端口（全部只读）；
+ * 2) 接入：接入正在运行的 Desktop 自己的服务，兼容旧版 19387 与新版动态端口——
  *      读本机凭据文件里的会话签名密钥，自签一枚 HMAC cookie 交给上层 dsh-compat。
  *      dsh-compat 本来就是 cookie 认证、本来就走 `/api/remote.mux` ⇒ 协议层零改动；
  *   3) 停止记账：pid 文件 + 路径身份校验，停止只允许杀本 adapter 曾经拉起的进程。
@@ -32,13 +32,14 @@ const http = require('http')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { tokenizeCommandLine } = require('./dsh-lifecycle.js')
 
 const DISPLAY_NAME = 'DeepSeek Harness'
 const DEFAULT_PROFILE = 'pet'      // 桌宠自持实例专用自定义 profile（web 模板派生）
 const TEMPLATE_PROFILE = 'web'     // 初始化模板（shipped）
 
 /* ---------- Desktop 自身服务（19387）的接入常量：照抄官方 dsh-client-connection，rc.2 实测 ---------- */
-const AUTHORITY = '127.0.0.1:19387'   // 必须与请求的 Host 头一致（用 localhost 会验签通过但 authority 不匹配）
+const AUTHORITY = '127.0.0.1:19387'   // 旧版回退端点；新版由 Host 进程的监听端口发现
 const AUTH_RECORD_KEY = 'client-connection/browser-session'
 const CREDENTIALS_FILE = '.credentials.yaml'
 const COOKIE_MAX_AGE_DAYS = 30        // 官方 cookieMaxAgeDays 默认 30；超过会被拒
@@ -110,8 +111,36 @@ const DETECT_SCRIPT = "$o=@{};" +
   "if($it){$o.loc=[string]$it.InstallLocation;$o.ver=[string]$it.DisplayVersion};" +
   "$p=Get-Process -Name '" + DISPLAY_NAME + "' -ErrorAction SilentlyContinue;" +
   "if($p){$o.pids=@($p | ForEach-Object {$_.Id});$exe=$p | Where-Object {$_.Path} | Select-Object -First 1 -ExpandProperty Path;if($exe){$o.exe=[string]$exe;if(!$o.ver){$o.ver=[string](Get-Item -LiteralPath $exe).VersionInfo.FileVersion}}};" +
-  "if(Get-NetTCPConnection -State Listen -LocalPort 19387 -ErrorAction SilentlyContinue){$o.p19387=$true};" +
+  // Only inspect listeners owned by the official GUI's Desktop Host child.
+  // Do not scan arbitrary local ports or send credentials to unrelated servers.
+  "$hosts=@(Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.CommandLine -match '[\\\\/]@deepseek-ai[\\\\/]dsh-desktop-host[\\\\/]lib[\\\\/]index\\.js' });" +
+  "$hostIds=@($hosts | ForEach-Object {$_.ProcessId});" +
+  "$o.hosts=@($hosts | ForEach-Object { @{pid=$_.ProcessId;commandLine=$_.CommandLine} });" +
+  "$listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue);" +
+  "$o.endpoints=@($listeners | Where-Object { $_.OwningProcess -in $hostIds -and $_.LocalAddress -eq '127.0.0.1' } | ForEach-Object { @{port=$_.LocalPort;pid=$_.OwningProcess;address=$_.LocalAddress} });" +
+  "if($listeners | Where-Object { $_.LocalPort -eq 19387 -and $_.LocalAddress -eq '127.0.0.1' }){$o.p19387=$true};" +
   "ConvertTo-Json -Compress -InputObject $o"
+
+function desktopEndpoints(discovery) {
+  const seen = new Set()
+  return (Array.isArray(discovery && discovery.endpoints) ? discovery.endpoints : []).filter(item => {
+    if (!item || item.address !== '127.0.0.1' || !Number.isInteger(item.port) || item.port < 1 || item.port > 65535 ||
+      !Number.isInteger(item.pid) || item.pid < 1 || seen.has(item.port)) return false
+    seen.add(item.port)
+    return true
+  }).map(({ port, pid, address, dshHome }) => {
+    const host = (Array.isArray(discovery.hosts) ? discovery.hosts : []).find(host => host.pid === pid)
+    if (host) {
+      const args = tokenizeCommandLine(host.commandLine)
+      const entry = args.findIndex(arg => /[\\/]@deepseek-ai[\\/]dsh-desktop-host[\\/]lib[\\/]index\.js$/i.test(arg))
+      const profile = entry >= 0 ? args[entry + 2] : null
+      if (profile && /[\\/]profiles[\\/]desktop[\\/]?$/i.test(profile) && path.win32.isAbsolute(profile)) {
+        dshHome = path.win32.dirname(path.win32.dirname(profile.replace(/[\\/]$/, '')))
+      }
+    }
+    return { port, pid, address, ...(typeof dshHome === 'string' && path.isAbsolute(dshHome) ? { dshHome } : {}) }
+  })
+}
 
 function detect(opts) {
   const now = Date.now()
@@ -122,7 +151,7 @@ function detect(opts) {
 // UI/heartbeat callers use this path: registry/process discovery must not block
 // Electron's main event loop. Share the same five-second cache and one probe.
 async function detectAsync(opts) {
-  if (detectCache.value && Date.now() - detectCache.at < DETECT_TTL_MS) return detectCache.value
+  if (!(opts && opts.refresh) && detectCache.value && Date.now() - detectCache.at < DETECT_TTL_MS) return detectCache.value
   if (detectionJob) return detectionJob
   detectionJob = new Promise(resolve => {
     let child, timer, text = '', done = false
@@ -139,6 +168,15 @@ async function detectAsync(opts) {
       child.on('error', () => finish(null))
       child.on('close', code => finish(code === 0 ? text.trim() : null))
     } catch (err) { finish(null) }
+  }).then(async result => {
+    // Process/registry visibility is not proof of endpoint availability.
+    const port = result.endpoints[0]?.port || 19387
+    const probe = await probeDesktop({ port, timeoutMs: 1500 })
+    result.endpoint = probe.state !== 'offline' ? 'http://127.0.0.1:' + port : null
+    result.endpointOnline = probe.state !== 'offline'
+    // Retained only for older status consumers; never alias a dynamic port to 19387.
+    if (port === 19387) result.port19387 = probe.state !== 'offline'
+    return result
   }).finally(() => { detectionJob = null })
   return detectionJob
 }
@@ -154,6 +192,9 @@ function resolveDetection(qRaw, opts, now) {
     running: false,
     runningPids: [],
     port19387: false,
+    endpoints: [],
+    endpoint: null,
+    endpointOnline: false,
     profileExists: false,
     error: null,
   }
@@ -190,6 +231,7 @@ function resolveDetection(qRaw, opts, now) {
     result.running = Array.isArray(q.pids) && q.pids.length > 0
     result.runningPids = Array.isArray(q.pids) ? q.pids : []
     result.port19387 = q.p19387 === true
+    result.endpoints = desktopEndpoints(q)
     try { result.profileExists = fs.existsSync(profilePath(resolveDshHome(opts), DEFAULT_PROFILE)) } catch (e) { result.profileExists = false }
   } catch (e) {
     result.error = String((e && e.message) || e)
@@ -258,7 +300,8 @@ function probeDesktop(opts) {
     const finish = (v) => { if (!done) { done = true; resolve(v) } }
     try {
       const req = http.request(
-        { host: '127.0.0.1', port, path: '/', method: 'GET', timeout: timeoutMs },
+        { host: '127.0.0.1', port, path: '/', method: 'GET', timeout: timeoutMs,
+          headers: o.cookie ? { Cookie: o.cookie } : {} },
         (res) => {
           try { res.resume() } catch (e) { /* ignore */ }
           const code = res.statusCode
@@ -280,16 +323,26 @@ async function attach(opts) {
   const o = opts || {}
   const out = { ok: false, reason: null, baseUrl: null, cookie: null, authority: AUTHORITY, expiresAt: null, probe: null }
   try {
-    out.probe = await probeDesktop({ port: 19387, timeoutMs: o.timeoutMs })
-    if (out.probe.state === 'offline') { out.reason = 'desktop_offline'; return out }
-    const got = readSessionSecret(resolveDshHome(o))
-    if (!got.secret) { out.reason = got.reason || 'secret_unavailable'; return out }
-    const signed = signCookie(got.secret, AUTHORITY, COOKIE_MAX_AGE_DAYS * 24 * 3600 * 1000)
-    out.cookie = signed.header
-    out.expiresAt = signed.expiresAt
-    out.baseUrl = 'http://' + AUTHORITY
-    out.ok = true
-    if (o.log) o.log('official harness attach ready', JSON.stringify({ baseUrl: out.baseUrl, expiresAt: out.expiresAt, probe: out.probe }))
+    const discovery = await (o.discover || detectAsync)({ ...o, refresh: true })
+    const endpoints = desktopEndpoints(discovery)
+    if (!endpoints.some(endpoint => endpoint.port === 19387)) endpoints.push({ port: 19387 })
+    out.reason = 'desktop_offline'
+    for (const endpoint of endpoints.slice(0, 5)) {
+      const { port } = endpoint
+      const probe = await probeDesktop({ port, timeoutMs: o.timeoutMs })
+      if (probe.state === 'offline') { if (!out.probe) out.probe = probe; continue }
+      out.probe = probe
+      const got = readSessionSecret(endpoint.dshHome || resolveDshHome(o))
+      if (!got.secret) { out.reason = got.reason || 'secret_unavailable'; return out }
+      const authority = '127.0.0.1:' + port
+      const signed = signCookie(got.secret, authority, COOKIE_MAX_AGE_DAYS * 24 * 3600 * 1000)
+      const authenticated = await probeDesktop({ port, timeoutMs: o.timeoutMs, cookie: signed.header })
+      if (authenticated.status !== 200) { out.reason = 'authentication_failed'; continue }
+      Object.assign(out, { ok: true, reason: null, cookie: signed.header, expiresAt: signed.expiresAt,
+        authority, baseUrl: 'http://' + authority, probe: authenticated })
+      if (o.log) o.log('official harness attach ready', JSON.stringify({ baseUrl: out.baseUrl, expiresAt: out.expiresAt, probe: out.probe }))
+      break
+    }
     return out
   } catch (e) {
     out.reason = 'exception'
@@ -472,6 +525,7 @@ async function openDesktop(opts) {
 
 module.exports = {
   detect, detectAsync, attach, probeDesktop, signCookie, readSessionSecret,
+  desktopEndpoints,
   ensureStarted, stopOwned, status, statusAsync, openDesktop, track, adoptRunning,
   AUTHORITY, DEFAULT_PROFILE, TEMPLATE_PROFILE,
 }

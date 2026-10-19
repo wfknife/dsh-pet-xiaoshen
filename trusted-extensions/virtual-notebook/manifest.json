@@ -1,0 +1,98 @@
+{
+  "id": "trusted.virtual-notebook",
+  "version": "1.0.0",
+  "capabilities": [
+    {
+      "priority": 1,
+      "input": {
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "maxLength": 140
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "effect": "virtual",
+      "services": [
+        "life.virtual-project"
+      ],
+      "id": "life.virtual-project",
+      "output": {
+        "type": "object",
+        "required": [
+          "operationId",
+          "step",
+          "virtual",
+          "kind",
+          "text",
+          "sourceRefs",
+          "eventAt",
+          "hash",
+          "quotedRole",
+          "ownerTaskCompleted"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "step": {
+            "type": "number"
+          },
+          "virtual": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "material_selected",
+              "virtual_notebook"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "sourceRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 240
+            }
+          },
+          "eventAt": {
+            "type": "number"
+          },
+          "hash": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "quotedRole": {
+            "type": "string",
+            "enum": [
+              "user"
+            ]
+          },
+          "ownerTaskCompleted": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  ],
+  "services": [
+    "life.virtual-project"
+  ],
+  "files": {
+    "entry.cjs": "d01edb7283d2fef5640d05b3b21102f171110c70d247f9b18e99cc65106527fc"
+  },
+  "entry": "entry.cjs",
+  "hostApi": 1
+}
