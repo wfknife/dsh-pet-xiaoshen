@@ -1618,14 +1618,15 @@ const CHAT_SESSION_FILE = path.join(DATA_DIR, 'chat-session.json')
 
 // Character Chat 的 Persona 单一来源已迁移到 PersonaCore。
 // 这里只保留 DSH Agent/Work 辅助会话所需的模型选择，不再维护第二套 Character Persona。
-const CHAT_MODEL = { provider: 'deepseek-official', model: ModelRegistry.modelFor('work'), reasoningEffort: 'off' } // 最便宜档，近零成本；模型 ID 唯一来源 model-registry.js
+/* The chat/agent panel is a user-configured DSH session. The pet does not change its model;
+   DSH owns that choice. Pet model selection only applies to the pet's own direct AI surfaces. */
 
 /* ---------- 用户可选的 Chat 模型（用户偏好） ----------
    落点分工（2026-09-17）：
      · 可选清单与合法性判定 = ModelRegistry（纯函数白名单，renderer 只渲染不判定）
      · 用户选择 = 独立文件 pet-prefs.json，**只由主进程读写**（渲染层的 pet-state.json 保存
        是整对象覆盖，两处写同一文件会互相丢键；偏好与游戏状态生命周期不同，分开更稳）
-     · 生效点 = callDirectLLM（Character Chat 直连）与 applyChatModel（DSH 辅助会话）
+     · 生效点 = callDirectLLM（Character Chat 直连）；DSH 会话模型由用户在 DSH 内配置
    取值语义：null / '' = 未设偏好 = **跟随最新 Flash**（registry 的 GA 判定，将来换新自动跟）；
              已设 = 用户显式选定的 ID（模型 ID 与端点绑定保存，失败保留选择并报告错误）。 */
 const PET_PREFS_FILE = path.join(DATA_DIR, 'pet-prefs.json')
@@ -1655,12 +1656,19 @@ function selectableForProvider(id) {
 async function discoverModelProvider(id) {
   const config = getModelConfig(), p = config.getProvider(id); if (!p.ok) return p
   const r = await getModelClient().discover(p.connection), stored = config.setModels(id, r, p.revision)
+  log('model discovery', JSON.stringify({ provider: id, protocol: p.connection.protocol, ok: !!r.ok, error: r.error || null, count: (r.models || []).length }))
   if (!stored.ok) return stored
   return Object.assign({}, r, { view: stored.view })
 }
 ipcMain.handle('modelConfig:get', () => getModelConfig().view())
 ipcMain.handle('modelConfig:defaultModel', (_e, value) => getModelConfig().setDefaultModel(value))
-ipcMain.handle('modelConfig:save', (_e, p) => getModelConfig().saveProvider(p))
+ipcMain.handle('modelConfig:save', (_e, p) => {
+  const r = getModelConfig().saveProvider(p)
+  if (r && r.ok) {
+    log('model config save', JSON.stringify({ provider: p && p.id || null, protocol: p && p.protocol || null, scopeChanged: !!r.scopeChanged, keyCleared: !!r.keyCleared, authModeReset: !!r.authModeReset, modelCleared: !!r.modelCleared, defaultCleared: r.defaultCleared || 0, routesCleared: r.routesCleared || 0 }))
+  } else if (r) log('model config save failed', JSON.stringify({ provider: p && p.id || null, error: r.error || null }))
+  return r
+})
 ipcMain.handle('modelConfig:default', (_e, id) => getModelConfig().setDefault(id))
 ipcMain.handle('modelConfig:remove', (_e, id) => getModelConfig().removeProvider(id))
 ipcMain.handle('modelConfig:route', (_e, role, value) => getModelConfig().setRoute(role, value))
@@ -1840,7 +1848,7 @@ function chatModelView() {
 
 ipcMain.handle('chatModel:get', () => chatModelView())
 
-/* 把 Chat 档偏好应用到 DSH 辅助会话（会话属性 ⇒ 必须显式改一次才立即生效）。 */
+/* Chat 档偏好只作用于桌宠自己的直连 AI 功能；DSH 会话的模型由用户在 DSH 内配置，桌宠不改。 */
 async function applyModelPrefToChatSession() { return 'direct-only' }
 
 ipcMain.handle('chatModel:set', async (_e, id) => {
@@ -1956,11 +1964,6 @@ async function permissionSet(payload) {
 
 ipcMain.handle('permission:set', async (_e, payload) => permissionSet(payload))
 
-async function applyChatModel(sid) {
-  // DSH owns its catalog and session models. Direct provider choices never cross here.
-  try { await api('session.selectModel', { sessionId: sid, provider: CHAT_MODEL.provider, model: CHAT_MODEL.model, reasoningEffort: CHAT_MODEL.reasoningEffort }) } catch (err) { /* nonfatal */ }
-}
-
 function loadChatSessionMeta() {
   try {
     const j = JSON.parse(fs.readFileSync(CHAT_SESSION_FILE, 'utf8'))
@@ -2004,7 +2007,6 @@ async function ensureChatSession() {
     const cr = await api('session.create', ws ? { workspaceId: ws.workspaceId } : { cwd: WORKSPACE_PATH })
     if (!cr || !cr.result || !cr.result.ok) return null
     const sid = cr.result.value.sessionId
-    await applyChatModel(sid)
     try { await api('session.rename', { sessionId: sid, title: '🔧 桌宠辅助会话' }) } catch (err) { /* ignore */ }
     saveChatSessionId(sid)
     log('chat session created', sid)
@@ -2878,7 +2880,8 @@ async function callDirectLLM(payload) {
     if (user) messages.push({ role: 'user', content: user.slice(0, 12000) })
   }
   const req = { model: route.model, messages, purpose, maxTokens: p.maxTokens, temperature: p.temperature == null ? route.connection.temps[p.purpose] ?? route.connection.temps[purpose] : p.temperature, timeoutMs: p.timeoutMs, thinking: p.thinking, signal: p.signal }
-  try { if (typeof promptStore !== 'undefined') promptStore.capture({ stage: p.promptStage || p.purpose || 'other', revision: p.promptRevision || 'builtin', model: req.model, messages, max_tokens: req.maxTokens, temperature: req.temperature }) } catch (e) { /* preview is optional */ }
+  // Debug capture of the exact request is opt-in only: chat content must not be written to disk by default.
+  try { if (process.env.DESKPET_PROMPT_CAPTURE === '1' && typeof promptStore !== 'undefined') promptStore.capture({ stage: p.promptStage || p.purpose || 'other', revision: p.promptRevision || 'builtin', model: req.model, messages, max_tokens: req.maxTokens, temperature: req.temperature }) } catch (e) { /* preview is optional */ }
   const result = await getModelClient().complete(route.connection, req)
   recordDirectModelUse(purpose, route.model, result.ok, result.error)
   return Object.assign({}, result, { providerId: route.providerId })
