@@ -2,7 +2,7 @@
   "name": "deskpet",
   "version": "2.0.0-rc.6",
   "private": true,
-  "description": "Desktop pet for DSH - chat with DeepSeek from your desktop",
+  "description": "Desktop companion for DSH with configurable AI model services",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

@@ -37,7 +37,7 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tag = "v$version"
-          $assets = @("dist/release/deskpet-setup-$version.exe", "dist-clean/deskpet-setup-clean-$version.exe")
+          $assets = @("dist-clean/deskpet-setup-clean-$version.exe")
           $hashes = $assets | ForEach-Object { "$( (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() )  $(Split-Path $_ -Leaf)" }
           $hashes | Set-Content SHA256SUMS.txt -Encoding utf8
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
@@ -47,5 +47,13 @@ jobs:
           }
           gh release upload $tag @assets SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
-          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease
+          $existingAssets = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
+          if ($LASTEXITCODE -ne 0) { throw 'Asset listing failed' }
+          foreach ($name in @($existingAssets | Where-Object { $_ -match '^deskpet-setup-(?!clean-)' })) {
+            gh release delete-asset $tag $name --repo $env:GITHUB_REPOSITORY --yes
+            if ($LASTEXITCODE -ne 0) { throw "Standard asset removal failed: $name" }
+          }
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$tag" -f "sha=$env:GITHUB_SHA" -F force=true
+          if ($LASTEXITCODE -ne 0) { throw 'Release tag update failed' }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease --notes-file RELEASE-NOTES.md
           if ($LASTEXITCODE -ne 0) { throw 'Release publish failed' }
